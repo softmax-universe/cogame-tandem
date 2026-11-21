@@ -1,14 +1,15 @@
-## Tandem's bundled scripted player. Prompt and trained policies use
-## players/ordinary/player.py and submit their orders on the player socket.
+## Tandem's bundled player entrypoint (/bin/tandem-player).
 ##
-##   PLAYER_SCRIPTED=porter|mule       -> a scripted seat
+##   PLAYER_PROMPT=<text>              -> delegates to /opt/tandem-ordinary/player.py
+##   PLAYER_SCRIPTED=porter|mule       -> native scripted seat
 ##   (neither)                         -> PLAYER_SCRIPTED=porter
 
 import
-  std/[json, monotimes, net, options, os, strutils, times, unicode],
+  std/[json, monotimes, net, options, os, posix, strutils, times, unicode],
   whisky
 
 const
+  DefaultOrdinaryPlayerPath* = "/opt/tandem-ordinary/player.py"
   SpriteClientChat = 0x81'u8
   SpriteClientReady = 0x85'u8
   LabelRuneCap* = 48
@@ -78,12 +79,36 @@ proc connectWithRetry(url: string): WebSocket =
           ConnectTimeoutMs div 1000, "s"
       sleep(ConnectRetryMs)
 
+proc ordinaryPlayerPath*(): string =
+  let configured = getEnv("TANDEM_ORDINARY_PLAYER_PATH").strip()
+  if configured.len > 0: configured else: DefaultOrdinaryPlayerPath
+
+proc shouldDelegateToOrdinary*(): bool =
+  getEnv("PLAYER_PROMPT").len > 0 or
+    getEnv("TANDEM_CHECKPOINT_ENDPOINT").len > 0 or
+    getEnv("TANDEM_ADAPTER_DIR").len > 0
+
+proc execOrdinaryPlayer(scriptPath: string) =
+  let pythonBin =
+    if getEnv("TANDEM_PYTHON_BIN").strip().len > 0:
+      getEnv("TANDEM_PYTHON_BIN").strip()
+    else:
+      "/usr/bin/python3"
+  if not fileExists(scriptPath):
+    quit("PLAYER_PROMPT requires the ordinary player runtime at " & scriptPath, 1)
+  let argv = allocCStringArray([pythonBin, scriptPath])
+  discard execv(pythonBin.cstring, argv)
+  deallocCStringArray(argv)
+  quit("tandem player: failed to exec " & pythonBin & " " & scriptPath, 1)
+
 when isMainModule:
   let url = getEnv("COWORLD_PLAYER_WS_URL")
   if url.len == 0:
     quit("COWORLD_PLAYER_WS_URL is not set", 1)
-  if getEnv("PLAYER_PROMPT").len > 0:
-    quit("PLAYER_PROMPT requires the ordinary player image", 1)
+  if shouldDelegateToOrdinary():
+    if existsEnv("PLAYER_SCRIPTED") and getEnv("PLAYER_SCRIPTED").strip().len > 0:
+      quit("Scripted transport cannot use a model or checkpoint", 1)
+    execOrdinaryPlayer(ordinaryPlayerPath())
   let
     scriptedEnv = getEnv("PLAYER_SCRIPTED").strip().toLowerAscii()
     label = getEnv("PLAYER_POLICY_LABEL").strip()

@@ -81,6 +81,9 @@ proc bothEntrypointsAreBuilt() =
   doAssert "COPY --from=build /workspace/tandem/data ./data" in dockerfile,
     "the runtime stage does not carry data/ (the cog rigs live there)"
   doAssert "COPY --from=build /workspace/tandem/client ./client" in dockerfile
+  doAssert "/opt/tandem-ordinary/" in dockerfile,
+    "the runtime stage does not carry the ordinary player for PLAYER_PROMPT"
+  doAssert "python3" in dockerfile
   let ordinary = repoFile("Dockerfile.ordinary-player")
   doAssert "COPY players/ordinary/*.py ." in ordinary
   doAssert "COPY players/ordinary/system_prompt.txt ." in ordinary
@@ -95,8 +98,10 @@ proc playerSelectsItsPolicyByEnv() =
     "a seat with neither env var must default to porter"
   doAssert "except CatchableError" in source,
     "the receive loop is not wrapped; whisky RAISES on a close frame"
-  doAssert "PLAYER_PROMPT requires the ordinary player image" in source
-  report "the bundled player accepts scripted baselines only"
+  doAssert "shouldDelegateToOrdinary" in source
+  doAssert "Scripted transport cannot use a model or checkpoint" in source
+  doAssert "/opt/tandem-ordinary/player.py" in source
+  report "the bundled player runs scripted baselines natively and delegates PLAYER_PROMPT to the ordinary player"
 
 when isMainModule:
   badConfigIsACleanError()

@@ -49,7 +49,7 @@ RUN nim c $NimFlags --parallelBuild:1 --nimcache:/tmp/tandem-nimcache --out:tand
 FROM debian:bookworm-slim
 
 RUN apt-get update && \
-  apt-get install -y --no-install-recommends ca-certificates libcurl4 && \
+  apt-get install -y --no-install-recommends ca-certificates libcurl4 python3 python3-websocket && \
   rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace/tandem
@@ -58,5 +58,8 @@ COPY --from=build /workspace/tandem/tandem-player /bin/tandem-player
 COPY --from=build /workspace/tandem/*.json ./
 COPY --from=build /workspace/tandem/data ./data
 COPY --from=build /workspace/tandem/client ./client
+COPY --from=build /workspace/tandem/players/ordinary/*.py /opt/tandem-ordinary/
+COPY --from=build /workspace/tandem/players/ordinary/system_prompt.txt /opt/tandem-ordinary/
+COPY --from=build /workspace/tandem/players/ordinary/prompt_introductions.json /workspace/tandem/players/ordinary/prompt_bank.json /opt/tandem-ordinary/
 
 CMD ["/bin/tandem"]
