@@ -40,7 +40,7 @@ import
   bitworld/client as bitworldClient,
   bitworld/[runtime, decision_trajectory],
   bitworld/spriteprotocol,
-  mummy,
+  crunchy, mummy,
   sim, roster, control, orders, decide, prompts, training_capture,
   global, broadcast, replays, replay_runtime, events, wire_constants
 
@@ -667,6 +667,9 @@ proc runServerLoop*(
     ## on the normal exit AND from the host-error handler, which is what makes
     ## `fault/host_error` a real ending rather than a declared one: the note
     ## promises best-effort artifacts before re-raising.
+    replayWriter.closeReplayWriter()
+    let hasReplay = saveReplayPath.len > 0 and fileExists(saveReplayPath)
+    let replayBytes = if hasReplay: readFile(saveReplayPath) else: ""
     if not replayLoaded:
       let results = parseJson(sim.playerResultsJson())
       var externalSockets: seq[WebSocket]
@@ -676,21 +679,23 @@ proc runServerLoop*(
             if index >= 0 and index < sim.players.len and
                 engine.policies[sim.players[index].seat].kind == pkExternal:
               externalSockets.add(socket)
-      for socket in externalSockets:
-        socket.send($(%*{
-          "type": "final", "scores": results["scores"],
-          "reason": results["reason"], "endRule": results["endRule"]
-        }), TextMessage)
       if externalSockets.len > 0:
+        let final = $(%*{
+          "type": "final", "scores": results["scores"],
+          "reason": results["reason"], "endRule": results["endRule"],
+          "game": GameName, "seed": config.seed,
+          "replay_sha256": (if hasReplay: %sha256(replayBytes).toHex else: newJNull())
+        })
+        for socket in externalSockets:
+          socket.send(final, TextMessage)
         sleep(500)
-    replayWriter.closeReplayWriter()
     if capture.isSome:
       capture.get().finishMatch(sim)
       capture.get().trajectory.writeEventsToUri(trajectoryUri)
-    if saveReplayPath.len > 0 and fileExists(saveReplayPath):
+    if hasReplay:
       echo "Replay written: ", saveReplayPath,
         " (", getFileSize(saveReplayPath), " bytes)"
-      runtimeConfig.writeReplay(readFile(saveReplayPath))
+      runtimeConfig.writeReplay(replayBytes)
     if eventsPath.len > 0:
       writeFile(eventsPath, collectedEvents.eventsJsonl(sim.tickCount))
       echo "Events written: ", eventsPath, " (", collectedEvents.len,

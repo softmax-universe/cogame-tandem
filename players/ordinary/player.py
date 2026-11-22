@@ -394,7 +394,7 @@ def play(url, slot, packet, checkpoint, generator, strategy, artifact, backend):
             if pending:
                 raise RuntimeError("Tandem ended with unacknowledged decisions")
             if artifact:
-                artifact.upload(frame["scores"], frame["reason"])
+                artifact.upload(frame)
             break
     socket.close()
     print(f"Tandem ordinary player finished: slot={slot} backend={backend}", flush=True)
