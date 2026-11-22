@@ -1,7 +1,8 @@
-"""Retain accepted player decisions in the standard Coworld artifact."""
+"""Private turn receipts and optional accepted training decisions."""
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -19,7 +20,31 @@ class Capture:
         self.backend = backend
         self.revision = os.environ["TANDEM_SOURCE_REVISION"]
         self.upload_url = os.environ["COWORLD_PLAYER_ARTIFACT_UPLOAD_URL"]
+        self.training = os.environ.get("TANDEM_CAPTURE_TRAINING") == "1"
+        self.results: list[dict] = []
         self.rows: list[dict] = []
+
+    @staticmethod
+    def attempt(evidence: dict, action: dict, source: str) -> dict:
+        issued = json.dumps(action, sort_keys=True, separators=(",", ":")).encode()
+        return {
+            "attempt_id": evidence["attempt_id"],
+            "platform_call_id": evidence["platform_call_id"],
+            "provider_request_id": evidence["provider_request_id"],
+            "source": source,
+            "issued_action_sha256": hashlib.sha256(issued).hexdigest(),
+        }
+
+    def record_result(self, frame: dict, attempts: dict) -> None:
+        fields = ("turn", "accepted", "selected_attempt_id", "executed_action")
+        receipt = {key: frame[key] for key in fields if key in frame}
+        receipt["attempts"] = [identity for identity, _ in attempts.values()]
+        self.results.append(receipt)
+        if self.training and frame["accepted"]:
+            # Legacy turn-only ACKs used the last submission for training. Preserve
+            # that format without inventing a server-selected ID in the receipt.
+            selected = frame.get("selected_attempt_id") or next(reversed(attempts))
+            self.record(*attempts[selected][1])
 
     def record(self, system: str, user: str, action: dict, source: str, tick: int, selection: PromptSelection) -> None:
         self.rows.append(
@@ -39,6 +64,19 @@ class Capture:
     def upload(self, scores: list[float], reason: str) -> None:
         archive = io.BytesIO()
         with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as output:
+            output.writestr(
+                "decision_results.json",
+                json.dumps({
+                    "schema_version": 1,
+                    "episode_id": os.environ.get("COWORLD_EPISODE_ID"),
+                    "slot": self.slot,
+                    "backend": self.backend,
+                    "source_revision": self.revision,
+                    "reason": reason,
+                    "scores": scores,
+                    "results": self.results,
+                }),
+            )
             output.writestr(
                 "trajectory.json",
                 json.dumps(

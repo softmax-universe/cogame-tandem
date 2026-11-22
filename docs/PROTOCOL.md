@@ -48,7 +48,9 @@ player socket. Each `turn` frame has the turn index, private `view`, and episode
 player constructs its own prompt and complete carry order, then replies
 with `{"type":"decision","turn":N,"action":{...}}`. The game sends a
 `decision_result` acceptance receipt after the action enters the replay and
-ends with a `final` frame containing scores, reason, and end rule. The normal
+includes `turn`, `accepted`, `selected_attempt_id` (null on fallback), and
+the seat’s quantized `executed_action`. Each retry has its own `attempt_id`.
+The game ends with a `final` frame containing scores, reason, and end rule. The normal
 binary board frames and Ready packet continue. Sprite input masks remain zero.
 The server computes both force vectors from recorded orders.
 

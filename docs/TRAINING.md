@@ -14,7 +14,19 @@ and PEFT installed. The player's `PLAYER_PROMPT` remains private to its seat.
 Set `TANDEM_CAPTURE_TRAINING=1` and `TANDEM_SOURCE_REVISION` to upload
 accepted decisions as the standard player artifact. The game sends an
 acceptance receipt for each decision and a final score frame before it writes
-results. Export at least two complete seeds:
+results. For receipt-only collection, set `TANDEM_CAPTURE_RECEIPTS=1` instead.
+Supply `TANDEM_SOURCE_REVISION`, an episode-specific private
+`COWORLD_PLAYER_ARTIFACT_UPLOAD_URL` (a mounted `file://` path also works),
+and `COWORLD_EPISODE_ID` for the run join. Retain the ZIP before removing
+the mount. Both capture modes write `decision_results.json` on the final frame.
+Each turn records issued attempt IDs, available platform/provider call IDs, source,
+and the SHA-256 of each submitted action (UTF-8 Python JSON with sorted keys,
+ASCII escaping and compact separators). The game receipt identifies the selected
+attempt and the executed order, including the fallback order on rejection.
+Older turn-only receipts omit those two fields. Compare by episode, seat, turn
+and attempt ID against the game's private `COGAME_SAVE_TRAJECTORY_URI` events.
+
+Export at least two complete training seeds:
 
 ```sh
 python3 players/ordinary/export.py /tmp/tandem-dataset \

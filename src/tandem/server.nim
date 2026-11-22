@@ -876,7 +876,9 @@ proc runServerLoop*(
                         sim.players[playerIndices[i]].seat == seat:
                       sockets[i].send($(%*{
                         "type": "decision_result", "turn": turnIndex,
-                        "accepted": engine.externalAccepted[seat]
+                        "accepted": engine.externalAccepted[seat],
+                        "selected_attempt_id": engine.decisions[seat].selectedAttemptId,
+                        "executed_action": engine.decisions[seat].executedAction
                       }), TextMessage)
           # EDIT 1: the seats send no inputs; the control layer compiles both
           # force vectors from the recorded orders. The mask frame is still
