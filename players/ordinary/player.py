@@ -227,11 +227,10 @@ def main() -> None:
         if strategy
         else "heuristic"
     )
-    artifact = (
-        Capture(slot, backend)
-        if os.environ.get("TANDEM_CAPTURE_TRAINING") == "1"
-        else None
+    capture_enabled = any(
+        os.environ.get(key) == "1" for key in ("TANDEM_CAPTURE_TRAINING", "TANDEM_CAPTURE_RECEIPTS")
     )
+    artifact = Capture(slot, backend) if capture_enabled else None
     registration = json.dumps(
         {
             "type": "register",
@@ -287,7 +286,7 @@ def play(url, slot, packet, checkpoint, generator, strategy, artifact, backend):
     socket = connect_player(url)
     socket.send(packet, opcode=websocket.ABNF.OPCODE_BINARY)
     re_registered = False
-    pending: dict[int, tuple[str, str, dict, str, PromptSelection]] = {}
+    pending = {}
     while True:
         opcode, data = socket.recv_data(control_frame=True)
         if opcode == websocket.ABNF.OPCODE_CLOSE:
@@ -357,13 +356,16 @@ def play(url, slot, packet, checkpoint, generator, strategy, artifact, backend):
                     PromptSelection.from_config(frame["prompt_configuration"]),
                 )
                 evidence["rejection_reason"] = type(error).__name__
-            pending[frame["turn"]] = (
-                system,
-                user,
-                action,
-                source,
-                PromptSelection.from_config(frame["prompt_configuration"]),
-            )
+            attempts = pending.setdefault(frame["turn"], {})
+            attempt_id = frame["attempt_id"]
+            if attempt_id in attempts:
+                raise ValueError("Duplicate Tandem attempt ID")
+            identity = artifact.attempt(evidence, action, source) if artifact else None
+            training = None
+            if artifact and artifact.training:
+                selection = PromptSelection.from_config(frame["prompt_configuration"])
+                training = (system, user, action, source, frame["turn"], selection)
+            attempts[attempt_id] = (identity, training)
             socket.send(
                 json.dumps(
                     {
@@ -377,9 +379,17 @@ def play(url, slot, packet, checkpoint, generator, strategy, artifact, backend):
                 )
             )
         elif kind == "decision_result":
-            system, user, action, source, selection = pending.pop(frame["turn"])
-            if artifact and frame["accepted"]:
-                artifact.record(system, user, action, source, frame["turn"], selection)
+            attempts = pending.pop(frame["turn"], {})
+            accepted = frame["accepted"]
+            selected = frame.get("selected_attempt_id")
+            if type(accepted) is not bool or (
+                "selected_attempt_id" in frame and accepted != (selected is not None)
+            ):
+                raise ValueError("Inconsistent Tandem decision result")
+            if (selected is not None and selected not in attempts) or (accepted and not attempts):
+                raise ValueError("Tandem acknowledged an unknown attempt")
+            if artifact:
+                artifact.record_result(frame, attempts)
         elif kind == "final":
             if pending:
                 raise RuntimeError("Tandem ended with unacknowledged decisions")
