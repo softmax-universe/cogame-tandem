@@ -61,7 +61,8 @@ class Capture:
             }
         )
 
-    def upload(self, scores: list[float], reason: str) -> None:
+    def upload(self, final: dict) -> None:
+        scores, reason = final["scores"], final["reason"]
         archive = io.BytesIO()
         with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as output:
             output.writestr(
@@ -74,6 +75,7 @@ class Capture:
                     "source_revision": self.revision,
                     "reason": reason,
                     "scores": scores,
+                    **{key: final[key] for key in ("game", "seed", "replay_sha256") if key in final},
                     "results": self.results,
                 }),
             )

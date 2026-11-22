@@ -26,6 +26,26 @@ attempt and the executed order, including the fallback order on rejection.
 Older turn-only receipts omit those two fields. Compare by episode, seat, turn
 and attempt ID against the game's private `COGAME_SAVE_TRAJECTORY_URI` events.
 
+For an offline comparison with the binary executed-order replay, retain
+`COGAME_SAVE_REPLAY_URI` from the same run and pass the expected seed and seat:
+
+```sh
+python3 tools/join_decision_receipts.py --seed 137 --seat 0 \
+  --receipt /private/run/policy_artifact_0.zip --replay /private/run/game.replay
+```
+
+The final frame binds the private receipt to the game, seed and SHA-256 of the
+uncompressed binary replay. For each turn the report keeps the player ACK,
+selected attempt and available call ID alongside the replay’s order source.
+A verified acceptance requires that selected attempt in the receipt and an
+exact match on the replay’s external order (six quantized integers, note and
+say). A verified fallback requires a negative ACK, a null selection and the
+matching fallback order. Missing evidence yields `unknown`; contradictory
+identities or orders fail the comparison. Omit an unavailable input to inspect
+the other side. Earlier player ZIPs lack the final-frame binding. A replay alone
+can establish that an external order executed, but it cannot identify the
+selected model call or establish that its player received an ACK.
+
 Export at least two complete training seeds:
 
 ```sh
