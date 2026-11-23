@@ -46,6 +46,15 @@ the other side. Earlier player ZIPs lack the final-frame binding. A replay alone
 can establish that an external order executed, but it cannot identify the
 selected model call or establish that its player received an ACK.
 
+For each episode and seat, `keyed_orders` counts replay turns and
+`keyed_receipts` counts supplied ACK rows with a usable turn and seat.
+The sorted `turns` array covers their union. Each row has `ack_present`,
+including when a present ACK lacks the fields needed for verification.
+`out_of_order_ack_turns` lists keyed ACKs whose turn is lower than a preceding
+keyed ACK in the ZIP, in receipt order. These rows still join by turn. A repeated
+keyed ACK turn fails the command, even if both copies agree. A gap alone does
+not establish reordering. Unkeyed rows have separate counts.
+
 Export at least two complete training seeds:
 
 ```sh

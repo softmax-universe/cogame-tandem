@@ -4,6 +4,8 @@ import gzip
 import hashlib
 import json
 import struct
+import subprocess
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -72,6 +74,40 @@ class ReceiptReplayTest(unittest.TestCase):
             (replay_only["ack_accepted"], replay_only["replay_source"], replay_only["join"]),
             (None, "external", "unknown"),
         )
+
+    def test_cli_ack_order_and_coverage(self):
+        first, second = self.receipt["results"]
+        command = [
+            sys.executable, str(Path(__file__).with_name("join_decision_receipts.py")),
+            "--seed", "42", "--seat", "0", "--replay", str(self.replay),
+        ]
+        for rows, late, presence, joins in [
+            ([first, second], [], [True, True], ["verified_accepted", "verified_fallback"]),
+            ([second, first], [0], [True, True], ["verified_accepted", "verified_fallback"]),
+            ([second], [], [False, True], ["unknown", "verified_fallback"]),
+            ([{"turn": 0}, second], [], [True, True], ["unknown", "verified_fallback"]),
+            (None, [], [False, False], ["unknown", "unknown"]),
+            ([second, first, second], None, None, None),
+        ]:
+            with self.subTest(rows=rows):
+                args = command.copy()
+                if rows is not None:
+                    with zipfile.ZipFile(self.artifact, "w") as archive:
+                        archive.writestr("decision_results.json", json.dumps(self.receipt | {"results": rows}))
+                    args.extend(["--receipt", str(self.artifact)])
+                result = subprocess.run(args, capture_output=True, text=True)
+                if late is None:
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn("duplicate ACK turn 1", result.stderr)
+                    self.assertEqual(result.stdout, "")
+                    continue
+                self.assertEqual(result.returncode, 0, result.stderr)
+                report = json.loads(result.stdout)
+                self.assertEqual((report["keyed_receipts"], report["keyed_orders"]), (len(rows or []), 2))
+                self.assertEqual(report["out_of_order_ack_turns"], late)
+                self.assertEqual([r["turn"] for r in report["turns"]], [0, 1])
+                self.assertEqual([r["ack_present"] for r in report["turns"]], presence)
+                self.assertEqual([r["join"] for r in report["turns"]], joins)
 
     def test_refuse_conflicting_evidence(self):
         ack = self.receipt["results"][0]

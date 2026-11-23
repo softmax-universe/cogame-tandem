@@ -18,7 +18,7 @@ def check_identity(label, actual, expected):
     return True
 
 
-def index_turns(rows):
+def index_turns(rows, label):
     indexed = {}
     unkeyed = 0
     for row in rows:
@@ -26,8 +26,10 @@ def index_turns(rows):
         if turn is None:
             unkeyed += 1
             continue
-        if type(turn) is not int or turn < 0 or turn in indexed:
-            raise ValueError(f"invalid or duplicate turn {turn!r}")
+        if type(turn) is not int or turn < 0:
+            raise ValueError(f"invalid {label} turn {turn!r}")
+        if turn in indexed:
+            raise ValueError(f"duplicate {label} turn {turn}")
         indexed[turn] = row
     return indexed, unkeyed
 
@@ -134,7 +136,7 @@ def audit(seed, seat, replay_path=None, artifact_path=None):
     )
 
     receipt_rows = receipt.get("results") or []
-    acks, unkeyed_acks = index_turns(receipt_rows if seat_ok else [])
+    acks, unkeyed_acks = index_turns(receipt_rows if seat_ok else [], "ACK")
     seat_orders = []
     missing_seat = 0
     for order in replay.get("orders", []):
@@ -145,9 +147,17 @@ def audit(seed, seat, replay_path=None, artifact_path=None):
             raise ValueError("invalid replay order seat")
         if order["seat"] == seat:
             seat_orders.append(order)
-    orders, unkeyed_orders = index_turns(seat_orders)
+    orders, unkeyed_orders = index_turns(seat_orders, "replay order")
+    # Dict insertion order preserves the sequence in decision_results.json.
+    highest_turn = -1
+    out_of_order = []
+    for turn in acks:
+        if turn < highest_turn:
+            out_of_order.append(turn)
+        else:
+            highest_turn = turn
     turns = [
-        join_turn(t, seat, acks.get(t, {}), orders.get(t, {}), bound)
+        {**join_turn(t, seat, acks.get(t, {}), orders.get(t, {}), bound), "ack_present": t in acks}
         for t in sorted(acks.keys() | orders.keys())
     ]
     return {
@@ -156,6 +166,9 @@ def audit(seed, seat, replay_path=None, artifact_path=None):
         "seat": seat,
         "replay_sha256": digest,
         "receipt_bound_to_replay": bound,
+        "keyed_receipts": len(acks),
+        "keyed_orders": len(orders),
+        "out_of_order_ack_turns": out_of_order,
         "unkeyed_receipts": unkeyed_acks if seat_ok else len(receipt_rows),
         "unkeyed_orders": unkeyed_orders + missing_seat,
         "turns": turns,
