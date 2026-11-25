@@ -377,7 +377,10 @@ proc turn*(
             settled[seat] = true
           else:
             cause = "parse_error"
-            detail = "invalid or incomplete carry order"
+            if evidence.rejectionReason.isSome and evidence.rejectionReason.get().len > 0:
+              detail = evidence.rejectionReason.get()
+            else:
+              detail = "invalid or incomplete carry order"
         except CatchableError as failure:
           cause = "parse_error"
           detail = failure.msg

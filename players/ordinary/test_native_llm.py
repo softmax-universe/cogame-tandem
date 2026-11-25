@@ -5,7 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 from unittest.mock import patch
 
-from player import choose
+from player import choose, parse_order_response
 from policy import default_order
 from test_policy import VIEW
 
@@ -122,3 +122,19 @@ class NativeLlmTest(unittest.TestCase):
                     None,
                     "",
                 )
+
+    def test_parse_order_response_accepts_raw_and_single_fence_only(self):
+        raw = json.dumps(default_order(VIEW))
+        self.assertEqual(parse_order_response(raw), default_order(VIEW))
+        self.assertEqual(
+            parse_order_response(f"```json\n{raw}\n```"),
+            default_order(VIEW),
+        )
+        for rejected in (
+            f"Sure! Here is my move: {raw}",
+            f"{raw}\nextra trailing text",
+            f"```json\n{raw}\n```\n```json\n{raw}\n```",
+            "no json here",
+        ):
+            with self.assertRaises(ValueError, msg=rejected):
+                parse_order_response(rejected)
