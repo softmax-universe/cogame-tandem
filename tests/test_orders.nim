@@ -122,10 +122,28 @@ proc recordRoundTrips() =
     doAssert back.order.brace == order.brace
   report "every quantised field round-trips through the replay record"
 
+proc extractRejectsProseAndMultipleFences() =
+  let raw = """{"drive":[1,0],"effort":0.5,"yield":0.2,"twist":0,"brace":0}"""
+  doAssert extractOrderObject(raw)["effort"].getFloat() == 0.5
+  doAssert extractOrderObject("```json\n" & raw & "\n```")["effort"].getFloat() == 0.5
+  for bad in [
+      "Sure, here is my move: " & raw,
+      raw & " extra",
+      "```json\n" & raw & "\n```\n```json\n" & raw & "\n```",
+      "```json\n" & raw]:
+    var raised = false
+    try:
+      discard extractOrderObject(bad)
+    except ValueError:
+      raised = true
+    doAssert raised, "prose or invalid fence was accepted: " & bad
+  report "extractOrderObject accepts raw JSON or one fence and rejects brace scraping"
+
 when isMainModule:
   completeAction()
   legacyShimsAreRejected()
   missingAndInvalidAreRejected()
+  extractRejectsProseAndMultipleFences()
   runeTruncation()
   fallbackDetailsAreRuneSafe()
   oversizeRecordStaysJson()

@@ -248,36 +248,21 @@ proc capRecord*(text: string): string =
 # --------------------------------------------------------------------------
 
 proc extractOrderObject*(text: string): JsonNode =
-  ## Match the ordinary player: accept response framing, never skip a malformed
-  ## first object or repair its JSON. Quantisation remains in parseOrder.
+  ## Parse a single JSON object, optionally wrapped in one markdown code fence.
+  ## Rejects prose brace-scraping and multiple fences without repairing JSON.
+  var stripped = text.strip()
+  if stripped.startsWith("```"):
+    let lines = stripped.splitLines()
+    if lines.len < 3 or lines[^1].strip() != "```":
+      raise newException(ValueError, "Tandem response has an invalid code fence")
+    let inner = lines[1 .. ^2].join("\n").strip()
+    if "```" in inner:
+      raise newException(ValueError, "Tandem response contains multiple code fences")
+    stripped = inner
   try:
-    result = parseJson(text)
+    result = parseJson(stripped)
   except JsonParsingError:
-    let start = text.find('{')
-    if start < 0:
-      raise newException(ValueError, "Tandem response contains no JSON object")
-    var
-      depth = 0
-      inString = false
-      escaped = false
-    for i in start ..< text.len:
-      let ch = text[i]
-      if inString:
-        if escaped: escaped = false
-        elif ch == '\\': escaped = true
-        elif ch == '"': inString = false
-      else:
-        case ch
-        of '"': inString = true
-        of '{': inc depth
-        of '}':
-          dec depth
-          if depth == 0:
-            result = parseJson(text[start .. i])
-            break
-        else: discard
-    if result.isNil:
-      raise newException(ValueError, "Tandem response has an unterminated JSON object")
+    raise newException(ValueError, "Tandem response is not a single JSON object")
   if result.kind != JObject:
     raise newException(ValueError, "Tandem response must be a JSON object")
 

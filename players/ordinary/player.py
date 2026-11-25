@@ -19,14 +19,20 @@ from startup import ready_before_game
 
 
 def parse_order_response(text: str) -> dict:
-    """Read the first JSON object through response framing without repairing JSON."""
+    """Parse a single JSON object, optionally inside one markdown code fence."""
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        if len(lines) < 3 or lines[-1].strip() != "```":
+            raise ValueError("Tandem response has an invalid code fence")
+        inner = "\n".join(lines[1:-1]).strip()
+        if "```" in inner:
+            raise ValueError("Tandem response contains multiple code fences")
+        stripped = inner
     try:
-        action = json.loads(text)
-    except json.JSONDecodeError:
-        start = text.find("{")
-        if start < 0:
-            raise ValueError("Tandem response contains no JSON object") from None
-        action, _ = json.JSONDecoder().raw_decode(text, start)
+        action = json.loads(stripped)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Tandem response is not a single JSON object: {exc.msg}") from None
     if not isinstance(action, dict):
         raise TypeError("Tandem response must be a JSON object")
     return action
@@ -366,7 +372,7 @@ def play(url, slot, packet, checkpoint, generator, strategy, artifact, backend):
                     strategy,
                     PromptSelection.from_config(frame["prompt_configuration"]),
                 )
-                evidence["rejection_reason"] = type(error).__name__
+                evidence["rejection_reason"] = f"{type(error).__name__}: {error}"[:400]
             attempts = pending.setdefault(frame["turn"], {})
             attempt_id = frame["attempt_id"]
             if attempt_id in attempts:

@@ -402,9 +402,11 @@ proc declarePlayerFailure*(slot: int, message: string) =
   ## Exported so tests/test_engine.nim can drive it against a real
   ## file:// target and assert the JSON shape the runner polls for.
   try:
+    let safeMessage = clipRunes(
+      if message.len > 0: message else: "player failure", 2000)
     writeCogameEnv(
       "COGAME_PLAYER_FAILURE_URI",
-      $(%*{"failed_policy_index": slot, "message": message}),
+      $(%*{"failed_policy_index": slot, "message": safeMessage}),
       "application/json"
     )
   except CatchableError as e:
@@ -632,7 +634,7 @@ proc runServerLoop*(
           appState.pendingExternalTurn = -1
   for seat in Seat:
     engine.policies[seat] = SeatPolicy(
-      kind: pkScripted, baseline: "porter", label: "porter")
+      kind: pkExternal, baseline: "", label: "unregistered", connected: false)
 
   let httpServer = newServer(httpHandler, websocketHandler, workerThreads = 4)
   var

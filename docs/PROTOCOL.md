@@ -41,7 +41,8 @@ after each received frame and otherwise only receives. It re-sends registration
 after the first received frame, in case the first send raced slot registration.
 The receive loop is
 wrapped in `try/except CatchableError` and exits 0 on a dead socket. A seat that
-never registers plays the game's `porter` fallback.
+never registers ends the episode as a terminal policy failure with no substitute
+move played.
 
 An ordinary policy receives private text frames on the same authenticated
 player socket. Each `turn` frame has the turn index, private `view`, and episode-stable `prompt_configuration`. The
@@ -116,13 +117,13 @@ Further caps on strings that reach the replay: `register.policy` ≤ 48 runes,
 **Truncation is on rune boundaries, never bytes.** Slicing a string by byte
 index on any path to the replay is forbidden.
 
-Parsing is strict on control fields: markdown fences or prose framing around the
-first balanced `{…}` object are unwrapped without repairing malformed JSON, and
-all five control fields (`drive`, `effort`, `yield`, `twist`, `brace`) must be
-present and valid JSON numbers in range. A failed attempt is retried once inside
-the turn budget; if a non-scripted seat still fails to produce a valid order, no
-substitute move is played and the episode terminates as a policy failure without
-publishing scores.
+Parsing is strict on control fields: a reply must be a single JSON object
+(optionally wrapped in one markdown code fence) without prose brace-scraping or
+malformed JSON repair, and all five control fields (`drive`, `effort`, `yield`,
+`twist`, `brace`) must be present and valid JSON numbers in range. A failed
+attempt is retried once inside the turn budget; if a non-scripted seat still
+fails to produce a valid order, no substitute move is played and the episode
+terminates as a policy failure without publishing scores.
 
 ## Replay bytes
 
