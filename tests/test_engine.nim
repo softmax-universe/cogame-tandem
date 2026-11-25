@@ -2,7 +2,7 @@
 ## inter-batch floor, the deadlines, the budget guard, the endings and the
 ## no-show path.
 
-import std/[json, monotimes, os, strutils, times]
+import std/[json, monotimes, options, os, strutils, times]
 import lib/helpers
 import tandem/[decide, server]
 
@@ -99,18 +99,20 @@ proc interBatchFloor() =
   config.minBatchSpacingMs = 400
   var sim = carryingSim(config)
   let engine = newEngine(fakeBatch(
-    """{"drive":[1,0],"effort":0.5}""", delayMs = 5))
+    """{"drive":[1,0],"effort":0.5,"yield":0.2,"twist":0,"brace":0}""", delayMs = 5))
   let started = getMonoTime()
   engine.turn(sim, 0, 0)
+  doAssert engine.failedSeat.isNone
   engine.applyRecords(sim)
   engine.turn(sim, 1, 0)
+  doAssert engine.failedSeat.isNone
   engine.applyRecords(sim)
   let elapsed = (getMonoTime() - started).inMilliseconds
   doAssert elapsed >= 380,
     "two turns took " & $elapsed & " ms; the 400 ms floor was not applied"
   report "the inter-batch floor keeps consecutive batches apart"
 
-proc retryThenFallback() =
+proc retryThenPolicyFailure() =
   windows.setLen(0)
   callLog.setLen(0)
   var sim = carryingSim(testConfig())
@@ -118,6 +120,7 @@ proc retryThenFallback() =
   engine.turn(sim, 4, 0)
   doAssert callLog.len == 2,
     "a failing batch was attempted " & $callLog.len & " times, not twice"
+  doAssert engine.failedSeat.isSome, "two consecutive failures must trigger policy failure"
   var fallbacks = 0
   var orders = 0
   for record in engine.records:
@@ -126,16 +129,18 @@ proc retryThenFallback() =
     of "fallback":
       inc fallbacks
       doAssert node["cause"].getStr() == "timeout",
-        "a curl deadline was recorded as " & node["cause"].getStr()
+        "a deadline was recorded as " & node["cause"].getStr()
     of "order":
       inc orders
-      doAssert node["source"].getStr() == "fallback"
     else: discard
-  doAssert fallbacks == 4, "expected four fallback records, got " & $fallbacks
-  doAssert orders == 2
+  doAssert fallbacks == 4, "expected four diagnostic failure records, got " & $fallbacks
+  doAssert orders == 0, "no substitute order may be emitted on policy failure"
+  doAssert engine.decisions[Cobalt].attempts.len == 2
+  doAssert engine.decisions[Cobalt].executedAction.kind == JNull
   engine.applyRecords(sim)
-  doAssert sim.activeOrder[0].source == osFallback
-  report "two consecutive failures fall back to porter with a record"
+  doAssert not sim.hasOrder[0] and not sim.hasOrder[1],
+    "a failed turn must not install any order"
+  report "two consecutive failures end in policy failure with no substitute move"
 
 proc perTurnBudget() =
   windows.setLen(0)
@@ -151,26 +156,20 @@ proc perTurnBudget() =
   let elapsed = (getMonoTime() - started).inMilliseconds
   doAssert elapsed < 4000,
     "a hung client held the turn for " & $elapsed & " ms"
-  report "the per-turn budget bounds a hung client"
+  doAssert engine.failedSeat.isSome
+  report "the per-turn budget bounds a hung client and fails cleanly"
 
-proc budgetGuardEndsComplete() =
-  var config = testConfig(maxTicks = 240)
-  config.wallClockBudgetSeconds = 10
-  var sim = carryingSim(config)
-  let engine = newEngine(fakeBatch("""{"drive":[1,0],"effort":0.5}"""))
-  engine.turn(sim, 0, 9)
-  doAssert engine.llmOff, "the budget guard did not fire"
-  var guarded = false
+proc invalidOrderFailsWithoutSubstitute() =
+  var sim = carryingSim(testConfig())
+  let engine = newEngine(fakeBatch("""{"drive":[0,0],"effort":0.5}"""))
+  engine.turn(sim, 1, 0)
+  doAssert engine.failedSeat.isSome
+  doAssert not engine.externalAccepted[Cobalt]
+  doAssert engine.decisions[Cobalt].attempts.len == 2
+  doAssert engine.decisions[Cobalt].executedAction.kind == JNull
   for record in engine.records:
-    if parseJson(record)["k"].getStr() == "budget_guard":
-      guarded = true
-  doAssert guarded, "no budget_guard record was written"
-  engine.applyRecords(sim)
-  while sim.phase != GameOver and sim.tickCount < 3000:
-    sim.stepSim()
-  doAssert sim.endReason == reasonComplete,
-    "the guarded run ended " & reasonText(sim.endReason)
-  report "the budget guard switches to scripted and the run ends complete"
+    doAssert parseJson(record)["k"].getStr() != "order"
+  report "an invalid/incomplete order ends in policy failure without substitute"
 
 proc wallClockStopIsDeadline() =
   var sim = carryingSim(testConfig())
@@ -193,77 +192,31 @@ proc hostErrorIsFault() =
   doAssert sim.endReason == reasonFault and sim.endRule == erHostError
   report "an unexpected exception yields fault/host_error"
 
-proc noTransportSeatPlaysPorter() =
-  ## No credentials at all: the seat is registered and connected, there is no
-  ## batch, so it falls back instantly with a `no_credentials` record and no
-  ## network wait — and revives the moment a transport exists.
+proc noTransportSeatFailsExplicitly() =
   var sim = carryingSim(testConfig())
   let engine = newTurnEngine(nil)
-  engine.policies[Cobalt] = SeatPolicy(kind: pkExternal,
-    connected: true)
-  engine.policies[Rust] = SeatPolicy(kind: pkScripted, baseline: "porter")
+  engine.policies[Cobalt] = SeatPolicy(kind: pkExternal, connected: true, label: "model")
+  engine.policies[Rust] = SeatPolicy(kind: pkScripted, baseline: "porter", connected: true)
   engine.turn(sim, 0, 0)
-  engine.applyRecords(sim)
-  doAssert sim.hasOrder[0] and sim.hasOrder[1],
-    "a seat with no transport left a cog unactuated"
-  var causes: seq[string] = @[]
+  doAssert engine.failedSeat == some(Cobalt)
+  doAssert "no_transport" in engine.failureMessage
   for record in engine.records:
-    let node = parseJson(record)
-    if node["k"].getStr() == "fallback":
-      causes.add(node["cause"].getStr())
-  doAssert causes == @["no_transport"],
-    "the no-transport fallback recorded " & $causes
-  # And it revives: a live batch on the next turn is used.
-  engine.batch = fakeBatch("""{"drive":[0,1],"effort":0.9}""")
-  engine.turn(sim, 1, 0)
-  engine.applyRecords(sim)
-  doAssert sim.activeOrder[0].source == osExternal, "the seat did not revive"
-  report "a seat with no transport plays porter and revives"
+    doAssert parseJson(record)["k"].getStr() != "order"
+  report "a non-scripted seat with no transport fails explicitly without porter"
 
-proc disconnectedSeatPlaysPorter() =
-  ## The design note's "a seat that disconnects mid-run keeps playing: its
-  ## order source degrades to `porter` and revives on reconnect". The seat has
-  ## a LIVE transport here — what makes it scripted is that its socket is gone,
-  ## and the episode must stop paying LLM latency for it.
+proc disconnectedSeatFailsExplicitly() =
   callLog.setLen(0)
   var sim = carryingSim(testConfig())
-  let engine = newEngine(fakeBatch("""{"drive":[0,1],"effort":0.9}"""))
-  engine.policies[Cobalt].connected = false      ## the socket closed.
-  # Computed BEFORE the turn: `porterOrder` reads the felt strain, which the
-  # installed orders change.
-  let porter = sim.porterOrder(Cobalt, 0)
+  let engine = newEngine(fakeBatch(
+    """{"drive":[0,1],"effort":0.9,"yield":0.2,"twist":0,"brace":0}"""))
+  engine.policies[Cobalt].connected = false
   engine.turn(sim, 0, 0)
-  engine.applyRecords(sim)
-  doAssert sim.hasOrder[0] and sim.hasOrder[1],
-    "a disconnected seat left a cog unactuated"
-  doAssert callLog.len == 1 and callLog[0] == @[ord(Rust)],
-    "the disconnected seat was still queried: " & $callLog
-  doAssert sim.activeOrder[ord(Cobalt)].source == osScripted,
-    "the disconnected seat's order came from " &
-      sourceText(sim.activeOrder[ord(Cobalt)].source)
-  doAssert sim.activeOrder[ord(Cobalt)].driveX == porter.driveX and
-    sim.activeOrder[ord(Cobalt)].effort == porter.effort,
-    "the disconnected seat did not play porter"
-  doAssert sim.activeOrder[ord(Rust)].source == osExternal,
-    "the CONNECTED seat stopped playing its policy"
-  # Reconnect: registration sets `connected` again and the seat revives.
-  let reg = registrationOf($ %*{"type": "register",
-    "scripted": newJNull(), "policy": "test-llm"}, Cobalt,
-    engine.policies[Cobalt])
-  doAssert reg.ok
-  engine.policies[Cobalt] = reg.policy
-  engine.batch = proc(calls: seq[BatchCall], timeoutSeconds: int):
-      seq[BatchReply] {.closure, gcsafe.} =
-    discard timeoutSeconds
-    for call in calls:
-      let action = %*{"drive": [0, 1], "effort": 0.9}
-      result.add BatchReply(seat: call.seat, ok: true,
-        text: $(%*{"type": "decision", "turn": call.turn, "action": action}))
-  engine.turn(sim, 1, 0)
-  engine.applyRecords(sim)
-  doAssert sim.activeOrder[ord(Cobalt)].source == osExternal,
-    "the seat did not revive on reconnect"
-  report "a disconnecting seat degrades to porter and revives on reconnect"
+  doAssert engine.failedSeat == some(Cobalt)
+  doAssert "disconnected" in engine.failureMessage
+  doAssert callLog.len == 0
+  for record in engine.records:
+    doAssert parseJson(record)["k"].getStr() != "order"
+  report "a disconnected non-scripted seat fails explicitly without porter"
 
 proc damageLastTurnIsTheLastTurn() =
   ## The `damage_last_turn` the SEAT IS SENT is the damage taken since the
@@ -272,7 +225,8 @@ proc damageLastTurnIsTheLastTurn() =
   ## `sim.damage - sim.damage` and the field is structurally 0 forever.
   userLog.setLen(0)
   var sim = carryingSim(testConfig())
-  let engine = newEngine(fakeBatch("""{"drive":[1,0],"effort":0.5}"""))
+  let engine = newEngine(fakeBatch(
+    """{"drive":[1,0],"effort":0.5,"yield":0.2,"twist":0,"brace":0}"""))
   engine.turn(sim, 0, 0)
   engine.applyRecords(sim)
   doAssert userLog.len == 2
@@ -302,39 +256,20 @@ proc noShowIsDeclared() =
   doAssert node["failed_policy_index"].getInt() == 1
   doAssert node["message"].getStr().len > 0
   removeFile(path)
-  # And the run still reaches a normal ending with one seat missing.
-  var config = testConfig(maxTicks = 480)
-  config.minPlayers = 2
-  var sim = initSimServer(config)
-  sim.gameEventLoggingEnabled = false
-  discard sim.addPlayer("only-one", 0, "t0")
-  sim.startGame()
-  while sim.phase != GameOver and sim.tickCount < 4000:
-    if sim.carrying():
-      let elapsed = sim.tickCount - sim.gameStartTick
-      if not (sim.hasOrder[0] and sim.hasOrder[1]) or
-          elapsed mod sim.turnTicks() == 0:
-        for seat in Seat:
-          sim.applyRecord(capRecord($orderJson(sim, seat,
-            sim.porterOrder(seat, elapsed div sim.turnTicks()))))
-    sim.stepSim()
-  doAssert sim.phase == GameOver, "the one-seat run never ended"
-  doAssert sim.endReason == reasonComplete,
-    "the one-seat run ended " & reasonText(sim.endReason)
-  report "a lobby no-show is declared and the run still ends normally"
+  report "a lobby no-show is declared via COGAME_PLAYER_FAILURE_URI"
 
 when isMainModule:
   bothSeatsInOneBatch()
   externalOrderUsesTheReplayRecord()
   interBatchFloor()
-  retryThenFallback()
+  retryThenPolicyFailure()
   perTurnBudget()
-  budgetGuardEndsComplete()
+  invalidOrderFailsWithoutSubstitute()
   wallClockStopIsDeadline()
   simFaultIsFault()
   hostErrorIsFault()
-  noTransportSeatPlaysPorter()
-  disconnectedSeatPlaysPorter()
+  noTransportSeatFailsExplicitly()
+  disconnectedSeatFailsExplicitly()
   damageLastTurnIsTheLastTurn()
   noShowIsDeclared()
-  echo "test_engine: the turn loop is parallel, bounded and degrade-never-hang"
+  echo "test_engine: the turn loop is parallel, bounded and fails cleanly without substitutes"

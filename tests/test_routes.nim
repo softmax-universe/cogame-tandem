@@ -13,6 +13,7 @@
 import std/[httpclient, json, monotimes, options, os, strutils, times]
 import lib/helpers
 import tandem/server
+import tandem_player
 import whisky
 
 const
@@ -24,13 +25,36 @@ var scoresPath = ""
 proc serverMain(path: string) {.thread.} =
   {.gcsafe.}:
     var config = testConfig(maxTicks = 120)
-    config.lobbyJoinTimeoutTicks = 24      ## 1 s of lobby, then play anyway.
+    config.startWaitTicks = 2
     config.gameOverTicks = 2
     runServerLoop(
       host = "127.0.0.1",
       port = TestPort,
       initialConfig = config,
       saveScoresPath = path)
+
+proc scriptedSeatThread(slot: int) {.thread.} =
+  {.gcsafe.}:
+    let url = "ws://127.0.0.1:" & $TestPort & "/player?slot=" & $slot &
+      "&token=t" & $slot
+    let reg = chatPacket(registrationPayload("porter", "route-porter-" & $slot))
+    let sock = newWebSocket(url)
+    sock.send(reg, BinaryMessage)
+    var reSent = false
+    while true:
+      try:
+        let msg = sock.receiveMessage(5000)
+        if msg.isNone: break
+        if not reSent:
+          reSent = true
+          sock.send(reg, BinaryMessage)
+        sock.send("\x85", BinaryMessage)
+      except CatchableError:
+        break
+    try:
+      sock.close()
+    except CatchableError:
+      discard
 
 proc get(path: string, timeoutMs = 4000): tuple[code: int, body: string] =
   var client = newHttpClient(timeout = timeoutMs)
@@ -84,7 +108,11 @@ proc routesAnswerAndTheGraceHolds() =
       path & " served a " & $page.body.len & "-byte stub"
 
   # The /global spectator websocket: snapshot -> ticks -> game over. Opened
-  # with the same client the player container uses.
+  # with the same client the player container uses, with two real scripted seats
+  # joined so the episode plays normally to GameOver.
+  var seat0, seat1: Thread[int]
+  createThread(seat0, scriptedSeatThread, 0)
+  createThread(seat1, scriptedSeatThread, 1)
   let viewer = newWebSocket("ws://127.0.0.1:" & $TestPort & "/global")
   var frames = 0
   var sawGameOver = false
@@ -132,6 +160,8 @@ proc routesAnswerAndTheGraceHolds() =
     "/client/global stopped answering inside the shutdown grace"
 
   joinThread(thread)
+  joinThread(seat0)
+  joinThread(seat1)
   doAssert not waitForHealth(2000),
     "the server was still listening after the grace expired"
   removeFile(scoresPath)

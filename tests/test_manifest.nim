@@ -32,13 +32,27 @@ proc numAgentsEverywhere() =
 proc everyDeclaredPlayerIsSeated() =
   let m = manifest()
   var declared = initHashSet[string]()
+  var hasModel = false
+  var hasBaseline = false
   for entry in m["player"]:
-    declared.incl(entry["id"].getStr())
+    let id = entry["id"].getStr()
+    declared.incl(id)
     doAssert entry["type"].getStr() == "player"
     doAssert entry["name"].getStr().len > 0
     doAssert entry["description"].getStr().len > 0
     doAssert entry["image"].getStr() == "{{TANDEM_IMAGE}}"
     doAssert entry["run"][0].getStr() == "/bin/tandem-player"
+    if id == "model":
+      hasModel = true
+      doAssert entry["env"]["COWORLD_LLM_ENABLED"].getStr() == "true"
+      doAssert entry["env"]["COWORLD_LLM_MODEL"].getStr().len > 0
+      doAssert not entry["env"].hasKey("PLAYER_SCRIPTED")
+    elif id == "baseline":
+      hasBaseline = true
+      doAssert entry["env"]["PLAYER_SCRIPTED"].getStr() == "porter"
+      doAssert not entry["env"].hasKey("COWORLD_LLM_ENABLED")
+  doAssert hasModel, "manifest must declare an explicit selectable model player"
+  doAssert hasBaseline, "manifest must declare an explicit scripted baseline player"
   var seated = initHashSet[string]()
   for slot in m["certification"]["players"]:
     seated.incl(slot["player_id"].getStr())
@@ -46,7 +60,7 @@ proc everyDeclaredPlayerIsSeated() =
     doAssert id in seated,
       "player[" & id & "] has no certification slot (cert would fail " &
         "players_missing)"
-  report "every declared player occupies a certification slot"
+  report "every declared player (model and baseline) occupies a certification slot"
 
 proc resultsSchemaMatchesTheDocument() =
   let m = manifest()

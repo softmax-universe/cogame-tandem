@@ -32,6 +32,13 @@ def parse_order_response(text: str) -> dict:
     return action
 
 
+def llm_mode_enabled() -> bool:
+    return (
+        os.environ.get("COWORLD_LLM_ENABLED", "").strip().lower() == "true"
+        or bool(os.environ.get("COWORLD_LLM_ENDPOINT", "").strip())
+    )
+
+
 def choose(
     turn: dict,
     generator,
@@ -54,12 +61,16 @@ def choose(
         )
         action = parse_order_response(completion)
         return action, "trained", system, user
-    if strategy or checkpoint:
+    if strategy or checkpoint or llm_mode_enabled():
         endpoint = (
             checkpoint.endpoint
             if checkpoint
             else os.environ.get("COWORLD_LLM_ENDPOINT", "").rstrip("/")
         )
+        if not endpoint and not os.environ.get("ANTHROPIC_API_KEY"):
+            raise ValueError(
+                "COWORLD_LLM_ENDPOINT or ANTHROPIC_API_KEY is required for model play"
+            )
         model = (
             os.environ.get("COWORLD_LLM_MODEL", "anthropic/claude-haiku-4.5")
             if endpoint
@@ -184,7 +195,7 @@ def main() -> None:
     url = os.environ["COWORLD_PLAYER_WS_URL"]
     slot = int(parse_qs(urlsplit(url).query)["slot"][0])
     if "PLAYER_SCRIPTED" in os.environ:
-        if any(
+        if llm_mode_enabled() or any(
             os.environ.get(name)
             for name in (
                 "PLAYER_PROMPT",
@@ -224,7 +235,7 @@ def main() -> None:
         else "trained"
         if adapter
         else "llm"
-        if strategy
+        if (strategy or llm_mode_enabled())
         else "heuristic"
     )
     capture_enabled = any(

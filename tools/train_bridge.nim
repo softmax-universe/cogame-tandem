@@ -215,8 +215,7 @@ when isMainModule:
           doAssert candidate[head["name"].getStr()] in head["choices"]
       let baseline = game.baselineOrder(seat,
         if seat == Cobalt: "porter" else: "mule", turn)
-      let (parsed, usable) = parseOrder((if textMode: candidate else: candidate.hostedOrder()),
-        engine.previous[seat], engine.hasPrevious[seat], baseline, turn)
+      let (parsed, usable) = parseOrder((if textMode: candidate else: candidate.hostedOrder()), turn)
       doAssert usable
       pending[seat] = parsed
       let normalized = orderFromRecord(parseJson(capRecord($orderJson(game, seat, parsed))))
