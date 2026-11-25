@@ -71,8 +71,7 @@ when isMainModule:
             let teacher = sim.baselineOrder(seat,
               if seat == Cobalt: "porter" else: "mule", turn)
             let completion = orderReplyJson(teacher)
-            let (parsed, usable) = parseOrder(completion,
-              engine.previous[seat], engine.hasPrevious[seat], teacher, turn)
+            let (parsed, usable) = parseOrder(completion, turn)
             doAssert usable
             doAssert abs(parsed.driveX - teacher.driveX) <= 2 and
               abs(parsed.driveY - teacher.driveY) <= 2

@@ -1,5 +1,7 @@
 ## The turn engine: one decision every 48 ticks, BOTH player sockets queried
-## within one deadline, two bounded attempts, then the scripted fallback.
+## within one deadline, two bounded attempts, and terminal policy failure if a
+## non-scripted seat fails to produce a valid order. No substitute or fallback
+## moves are ever fabricated.
 ##
 ## Timing (docs/RULES.md §Budget):
 ##   inter-batch wall floor      4.5 s   (config minBatchSpacingMs)
@@ -60,13 +62,13 @@ type
     previous*: array[Seat, Order]
     hasPrevious*: array[Seat, bool]
     damageAtTurnStart*: int32
-    llmOff*: bool
-    guardTurn*: int
     lastBatchAt*: MonoTime
     hasBatched*: bool
     records*: seq[string]      ## the replay chat records this turn produced.
     externalAccepted*: array[Seat, bool]
     decisions*: array[Seat, TurnDecision]
+    failedSeat*: Option[Seat]
+    failureMessage*: string
 
 # --------------------------------------------------------------------------
 # The per-seat view
@@ -219,23 +221,12 @@ proc userMessage*(
 # --------------------------------------------------------------------------
 
 proc newTurnEngine*(batch: BatchFn): TurnEngine =
-  result = TurnEngine(batch: batch, guardTurn: -1)
+  result = TurnEngine(batch: batch)
   for seat in Seat:
     result.previous[seat] = emptyOrder()
 
 proc addRecord(engine: TurnEngine, node: JsonNode) =
   engine.records.add(capRecord($node))
-
-proc fallbackFor(
-  engine: TurnEngine,
-  sim: SimServer,
-  seat: Seat,
-  turn: int
-): Order =
-  ## The `porter` order is the fallback for every failure mode.
-  discard engine
-  result = sim.porterOrder(seat, turn)
-  result.source = osFallback
 
 proc waitForBatchFloor(engine: TurnEngine, sim: SimServer, budgetLeftMs: int) =
   ## The inter-batch wall floor. A bounded sleep, never a spin, and never past
@@ -263,30 +254,20 @@ proc turn*(
   ## `turnBudgetMs` bound, then writes the records. The RECORDS are the only
   ## path an order takes into hashed state — the server folds each one back
   ## through `applyRecord`, so the live sim and the replay install bit-identical
-  ## integers.
+  ## integers. If any non-scripted seat fails to provide a valid order, no
+  ## substitute order is installed and `engine.failedSeat` is set.
   engine.records.setLen(0)
   engine.externalAccepted = [false, false]
+  engine.failedSeat = none(Seat)
+  engine.failureMessage = ""
   for seat in Seat:
-    engine.decisions[seat] = TurnDecision(status: asFallback,
-      observation: engine.seatViewJson(sim, seat, turnIndex))
+    engine.decisions[seat] = TurnDecision(status: asRejected,
+      observation: engine.seatViewJson(sim, seat, turnIndex),
+      executedAction: newJNull())
   let
     deadline = getMonoTime() + initDuration(
       milliseconds = max(1, sim.config.turnBudgetMs))
     budget = sim.config.wallClockBudgetSeconds
-    perTurn = (sim.config.turnBudgetMs + 999) div 1000
-
-  # Budget guard: switch the ordinary player requests off rather than
-  # let it end `deadline`. Microseconds per turn from here on.
-  if not engine.llmOff and elapsedSeconds + 2 * perTurn > budget:
-    engine.llmOff = true
-    engine.guardTurn = turnIndex
-    engine.addRecord(%*{
-      "k": "budget_guard",
-      "turn": turnIndex,
-      "remaining_s": budget - elapsedSeconds
-    })
-    echo "tandem: budget guard at turn ", turnIndex,
-      "; falling back to the scripted layer for the rest of the run"
 
   var
     resolved: array[Seat, Order]
@@ -294,23 +275,24 @@ proc turn*(
     calls: seq[BatchCall]
   for seat in Seat:
     let policy = engine.policies[seat]
-    if policy.kind == pkScripted or not policy.connected:
-      # DEGRADE, NEVER HANG. A scripted seat plays its baseline; a disconnected
-      # ordinary seat degrades to `porter` instead of waiting on its socket. It revives
-      # the moment a reconnect re-registers it — `registrationOf` sets
-      # `connected` again. A seat that has not registered at all is
-      # pkScripted/porter already.
+    if policy.kind == pkScripted:
       resolved[seat] = sim.baselineOrder(seat, policy.baseline, turnIndex)
       settled[seat] = true
-    elif engine.llmOff or engine.batch.isNil:
-      resolved[seat] = engine.fallbackFor(sim, seat, turnIndex)
-      settled[seat] = true
-      let cause = if engine.llmOff: "budget_guard" else: "no_transport"
+    elif not policy.connected or engine.batch.isNil:
+      let cause = if not policy.connected: "disconnected" else: "no_transport"
+      var evidence = newDecisionAttempt($turnIndex & "-" & $ord(seat) & "-1",
+        policy.label, aoUnknown)
+      evidence.rejectionReason = some(cause)
+      engine.decisions[seat].attempts.add(evidence)
       engine.addRecord(%*{
         "k": "fallback", "turn": turnIndex, "seat": ord(seat),
         "attempt": 1, "cause": cause,
-        "detail": ""
+        "detail": cause
       })
+      if engine.failedSeat.isNone:
+        engine.failedSeat = some(seat)
+        engine.failureMessage = "seat " & $ord(seat) & " (" & seatAlias(seat) &
+          ") failed on turn " & $turnIndex & ": " & cause
     else:
       calls.add BatchCall(
         seat: ord(seat),
@@ -318,6 +300,9 @@ proc turn*(
         attempt: 1,
         system: "",
         user: engine.userMessage(sim, seat, turnIndex))
+
+  if engine.failedSeat.isSome:
+    return
 
   if calls.len > 0:
     engine.waitForBatchFloor(sim, (budget - elapsedSeconds) * 1000)
@@ -374,14 +359,11 @@ proc turn*(
               raise newException(TandemError,
                 "external decision differs from the pending turn")
             payload = payload["action"]
-          let parsed = parseOrder(payload, engine.previous[seat],
-            engine.hasPrevious[seat], sim.porterOrder(seat, turnIndex),
-            turnIndex)
+          let parsed = parseOrder(payload, turnIndex)
           if parsed.usable:
             evidence.parsedAction = parsed.order.actionJson()
             if evidence.origin == aoModel:
-              let independent = parseOrder(extractOrderObject(evidence.response.getStr()),
-                engine.previous[seat], engine.hasPrevious[seat], sim.porterOrder(seat, turnIndex), turnIndex)
+              let independent = parseOrder(extractOrderObject(evidence.response.getStr()), turnIndex)
               if not independent.usable or independent.order.actionJson() != evidence.parsedAction:
                 raise newException(TandemError, "model response differs from submitted order")
             evidence.accepted = true
@@ -395,7 +377,7 @@ proc turn*(
             settled[seat] = true
           else:
             cause = "parse_error"
-            detail = "no usable order field"
+            detail = "invalid or incomplete carry order"
         except CatchableError as failure:
           cause = "parse_error"
           detail = failure.msg
@@ -403,7 +385,7 @@ proc turn*(
         engine.addRecord(%*{
           "k": "fallback", "turn": turnIndex, "seat": ord(seat),
           "attempt": attempt, "cause": cause,
-          "detail": cause
+          "detail": clipRunes(if detail.len > 0: detail else: cause, MaxDetailRunes)
         })
         for call in calls:
           if call.seat == reply.seat:
@@ -418,15 +400,21 @@ proc turn*(
     calls = retry
     inc attempt
 
-  for call in calls:
-    # Two consecutive failures: the seat plays `porter` this turn.
-    let seat = Seat(call.seat and 1)
-    resolved[seat] = engine.fallbackFor(sim, seat, turnIndex)
-    settled[seat] = true
-
   for seat in Seat:
     if not settled[seat]:
-      resolved[seat] = engine.fallbackFor(sim, seat, turnIndex)
+      var reason = "no valid order received"
+      if engine.decisions[seat].attempts.len > 0 and
+          engine.decisions[seat].attempts[^1].rejectionReason.isSome:
+        reason = engine.decisions[seat].attempts[^1].rejectionReason.get()
+      if engine.failedSeat.isNone:
+        engine.failedSeat = some(seat)
+        engine.failureMessage = "seat " & $ord(seat) & " (" & seatAlias(seat) &
+          ") failed on turn " & $turnIndex & ": " & reason
+
+  if engine.failedSeat.isSome:
+    return
+
+  for seat in Seat:
     resolved[seat].turn = int32(turnIndex)
     engine.previous[seat] = resolved[seat]
     engine.hasPrevious[seat] = true
@@ -437,9 +425,9 @@ proc turn*(
     of osScripted: discard
     engine.decisions[seat].executedAction = resolved[seat].actionJson()
     if resolved[seat].source == osScripted:
-      let intentional = engine.policies[seat].connected and engine.policies[seat].kind == pkScripted
+      let intentional = engine.policies[seat].kind == pkScripted
       var teacher = newDecisionAttempt($turnIndex & "-" & $ord(seat) & "-teacher",
-        "scripted-" & engine.policies[seat].baseline, if intentional: aoTeacher else: aoFallback)
+        "scripted-" & engine.policies[seat].baseline, aoTeacher)
       teacher.prompt = %*[{"role": "system", "content": selection.systemPrompt()},
         {"role": "user", "content": $engine.decisions[seat].observation}]
       teacher.parsedAction = resolved[seat].actionJson()

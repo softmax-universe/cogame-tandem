@@ -98,15 +98,15 @@ Everything in it is either your own state, the shared body's state, or the map.
  "twist": -0.40, "brace": 0.8, "say": "you lead, I'll follow"}
 ```
 
-| Field | Cap / legal values | Repair when violated |
+| Field | Cap / legal values | Validation |
 |---|---|---|
-| `note` | ≤ 160 runes | truncated on a rune boundary |
-| `drive` | finite, each clamped `[−1, 1]`, quantised to a Q12 unit vector | non-finite / missing / `[0,0]` → last turn's `drive`, else the scripted fallback's |
-| `effort` | finite, clamped `[0, 1]`, quantised to `0..255` | → 0.5 |
-| `yield` | finite, clamped `[0, 1]`, quantised to `0..255` | → 0.25 |
-| `twist` | finite, clamped `[−1, 1]`, quantised to `−255..255` | → 0 |
-| `brace` | finite, clamped `[0, 1]`, quantised to `0..255` | → 0 |
-| `say` | ≤ 48 runes | truncated on a rune boundary |
+| `note` | optional string, ≤ 160 runes | truncated on a rune boundary |
+| `drive` | required 2-element finite number array, each in `[−1, 1]`, non-zero, quantised to a Q12 unit vector | rejected if missing, non-finite, out of range, or `[0,0]` |
+| `effort` | required finite number in `[0, 1]`, quantised to `0..255` | rejected if missing, non-finite, or out of range |
+| `yield` | required finite number in `[0, 1]`, quantised to `0..255` | rejected if missing, non-finite, or out of range |
+| `twist` | required finite number in `[−1, 1]`, quantised to `−255..255` | rejected if missing, non-finite, or out of range |
+| `brace` | required finite number in `[0, 1]`, quantised to `0..255` | rejected if missing, non-finite, or out of range |
+| `say` | optional string, ≤ 48 runes | truncated on a rune boundary |
 
 Further caps on strings that reach the replay: `register.policy` ≤ 48 runes,
 `fallback.detail` ≤ 200 runes, the whole serialized `order` record ≤ 900 runes
@@ -116,11 +116,13 @@ Further caps on strings that reach the replay: `register.policy` ≤ 48 runes,
 **Truncation is on rune boundaries, never bytes.** Slicing a string by byte
 index on any path to the replay is forbidden.
 
-Parsing is tolerant: markdown fences are stripped, the outermost balanced
-`{…}` is taken, numeric strings are accepted, `drive` may arrive as
-`{"x":…,"y":…}`, and an integer percentage is divided by 100 when it exceeds 1.
-Only when no field at all can be recovered do the retry and then the scripted
-fallback fire.
+Parsing is strict on control fields: markdown fences or prose framing around the
+first balanced `{…}` object are unwrapped without repairing malformed JSON, and
+all five control fields (`drive`, `effort`, `yield`, `twist`, `brace`) must be
+present and valid JSON numbers in range. A failed attempt is retried once inside
+the turn budget; if a non-scripted seat still fails to produce a valid order, no
+substitute move is played and the episode terminates as a policy failure without
+publishing scores.
 
 ## Replay bytes
 

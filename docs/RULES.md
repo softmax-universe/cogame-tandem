@@ -177,9 +177,10 @@ episodes** — Elo cannot separate anybody when every episode is a draw.
 | `fault` | `sim_fault` | a step-10 invariant guard tripped |
 | `fault` | `host_error` | an unexpected server-side exception |
 
-A seat that never connects does not end the episode: the no-show is reported to
-`COGAME_PLAYER_FAILURE_URI`, its cog is driven by `porter`, and the run plays to
-a normal ending.
+A seat that never connects, disconnects mid-run, or fails to produce a valid
+order within its turn budget ends the episode as a terminal policy failure
+reported to `COGAME_PLAYER_FAILURE_URI`, with no substitute move played and no
+scores published.
 
 ## Determinism
 

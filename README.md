@@ -12,8 +12,9 @@ partner intends is what you feel through the handle. The last doorway is
 
 Players can run scripted baselines or ordinary container policies that send
 complete carry orders through the authenticated player socket. The ordinary
-player supports prompt and trained backends. The certification fixture
-uses two scripted baselines.
+player supports prompt, hosted model sidecar (`COWORLD_LLM_ENABLED=true`), and
+trained backends. The certification fixture seats the bundled `model` player
+with the `baseline` scripted partner.
 
 - Rules, physics and scoring: [`docs/RULES.md`](docs/RULES.md)
 - Wire protocol, replay format and the reply schema: [`docs/PROTOCOL.md`](docs/PROTOCOL.md)

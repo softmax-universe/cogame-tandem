@@ -89,13 +89,13 @@ test -f "${manifest}" || { echo "manifest not found: ${manifest}" >&2; exit 1; }
 # --------------------------------------------------------------------------
 # Episode config + per-seat launch args, derived from the cert fixture.
 # --------------------------------------------------------------------------
-python3 - "${manifest}" "${work_dir}" "${player_bin}" "${seats_expected}" "${image}" <<'PY'
+python3 - "${manifest}" "${work_dir}" "${player_bin}" "${seats_expected}" "${image}" "${prefix}" <<'PY'
 import json
 import os
 import shlex
 import sys
 
-manifest_path, work, player_bin, seats_expected, game_image = sys.argv[1:6]
+manifest_path, work, player_bin, seats_expected, game_image, prefix = sys.argv[1:7]
 manifest = json.load(open(manifest_path))
 game = manifest.get("game") or {}
 cert = manifest.get("certification") or {}
@@ -161,11 +161,13 @@ with open(os.path.join(work, "config.json"), "w") as fh:
 by_id = {p.get("id"): p for p in (manifest.get("player") or [])}
 extra_env = [kv for kv in (os.environ.get("SMOKE_EXTRA_ENV") or "").split() if "=" in kv]
 
+need_llm = False
 for slot in range(seats):
     player_id = cert_players[slot].get("player_id") if slot < len(cert_players) else None
     entry = by_id.get(player_id) or {}
+    env_map = dict(entry.get("env") or {})
     env_args = []
-    for key, value in (entry.get("env") or {}).items():
+    for key, value in env_map.items():
         env_args += ["-e", f"{key}={value}"]
     for kv in extra_env:
         env_args += ["-e", kv]
@@ -177,6 +179,13 @@ for slot in range(seats):
     else:
         argv = list(entry.get("run") or [player_bin])
         image = game_image
+        if str(env_map.get("COWORLD_LLM_ENABLED", "")).lower() == "true":
+            explicit_endpoint = os.environ.get("SMOKE_LLM_ENDPOINT") or os.environ.get("COWORLD_LLM_ENDPOINT")
+            if explicit_endpoint:
+                env_args += ["-e", f"COWORLD_LLM_ENDPOINT={explicit_endpoint}"]
+            else:
+                need_llm = True
+                env_args += ["-e", f"COWORLD_LLM_ENDPOINT=http://{prefix}-llm:8090"]
     with open(os.path.join(work, f"env-{slot}.args"), "w") as fh:
         fh.write(" ".join(shlex.quote(a) for a in env_args))
     with open(os.path.join(work, f"cmd-{slot}.args"), "w") as fh:
@@ -184,6 +193,9 @@ for slot in range(seats):
     with open(os.path.join(work, f"image-{slot}"), "w") as fh:
         fh.write(image)
     print(f"slot {slot}: player_id={player_id or '(default)'} run={argv} env={len(env_args) // 2}")
+
+with open(os.path.join(work, "need_llm"), "w") as fh:
+    fh.write("1" if need_llm else "0")
 
 with open(os.path.join(work, "seats"), "w") as fh:
     fh.write(str(seats))
@@ -197,6 +209,39 @@ chmod 777 "${work_dir}"
 # Launch.
 # --------------------------------------------------------------------------
 docker network create "${network}" >/dev/null
+
+need_llm="$(cat "${work_dir}/need_llm")"
+if [ "${need_llm}" = "1" ]; then
+  echo "starting local mock LLM fixture (${prefix}-llm) ..."
+  docker run -d --name "${prefix}-llm" \
+    --network "${network}" --network-alias "${prefix}-llm" \
+    -v "${work_dir}:/coworld:rw" \
+    "${image}" python3 -c '
+import json, sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+sys.path.insert(0, "/opt/tandem-ordinary")
+from policy import default_order
+
+class Handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+        user = body["messages"][-1]["content"]
+        view = json.loads(user[user.index("{"):])
+        order = default_order(view)
+        with open("/coworld/llm_calls.jsonl", "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"path": self.path, "model": body.get("model"), "slot": self.headers.get("X-Coworld-Player-Slot")}) + "\n")
+        reply = json.dumps({"model": body.get("model", "mock"), "content": [{"type": "text", "text": json.dumps(order)}], "stop_reason": "end_turn", "usage": {"input_tokens": 10, "output_tokens": 20}}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(reply)))
+        self.end_headers()
+        self.wfile.write(reply)
+    def log_message(self, *args):
+        pass
+
+ThreadingHTTPServer(("0.0.0.0", 8090), Handler).serve_forever()
+' >/dev/null
+fi
 
 echo "starting game container (${image} ${game_bin}) ..."
 docker run -d --name "${prefix}-game" \
@@ -270,7 +315,7 @@ done
 # --------------------------------------------------------------------------
 # Assert the artifacts.
 # --------------------------------------------------------------------------
-if ! python3 - "${work_dir}" "${seats}" "${require_replay_json}" <<'PY'
+if ! python3 - "${work_dir}" "${seats}" "${require_replay_json}" "${need_llm}" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -278,6 +323,7 @@ from pathlib import Path
 work = Path(sys.argv[1])
 seats = int(sys.argv[2])
 require_replay_json = sys.argv[3] not in ("0", "", "false", "no")
+need_llm = sys.argv[4] == "1"
 
 failure = work / "player_failure.json"
 if failure.exists():
@@ -316,6 +362,13 @@ if require_replay_json:
             f"replay is not valid UTF-8 JSON: {exc} "
             "(set SMOKE_REQUIRE_REPLAY_JSON=0 for a binary replay format)"
         ) from exc
+
+if need_llm:
+    llm_log = work / "llm_calls.jsonl"
+    if not llm_log.exists() or not llm_log.read_text(encoding="utf-8").strip():
+        raise SystemExit("no LLM /v1/messages call recorded by mock sidecar")
+    llm_calls = [json.loads(line) for line in llm_log.read_text(encoding="utf-8").splitlines() if line.strip()]
+    print(f"mock LLM sidecar recorded {len(llm_calls)} calls")
 
 print(
     f"smoke OK: seats={seats} results={results_path.stat().st_size}B "

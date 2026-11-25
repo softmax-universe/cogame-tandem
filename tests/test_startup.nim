@@ -98,6 +98,7 @@ proc playerSelectsItsPolicyByEnv() =
     "a seat with neither env var must default to porter"
   doAssert "except CatchableError" in source,
     "the receive loop is not wrapped; whisky RAISES on a close frame"
+  doAssert "COWORLD_LLM_ENABLED" in source
   doAssert "shouldDelegateToOrdinary" in source
   doAssert "Scripted transport cannot use a model or checkpoint" in source
   doAssert "/opt/tandem-ordinary/player.py" in source

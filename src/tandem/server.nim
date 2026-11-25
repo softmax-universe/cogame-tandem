@@ -649,6 +649,7 @@ proc runServerLoop*(
       else: initBroadcastTracker()
     quitAfterFrame = false
     failureDeclared = false
+    policyFailed = false
     resultRecordWritten = false
 
   proc recordAndWrite(text: string) =
@@ -671,7 +672,6 @@ proc runServerLoop*(
     let hasReplay = saveReplayPath.len > 0 and fileExists(saveReplayPath)
     let replayBytes = if hasReplay: readFile(saveReplayPath) else: ""
     if not replayLoaded:
-      let results = parseJson(sim.playerResultsJson())
       var externalSockets: seq[WebSocket]
       {.gcsafe.}:
         withLock appState.lock:
@@ -680,17 +680,30 @@ proc runServerLoop*(
                 engine.policies[sim.players[index].seat].kind == pkExternal:
               externalSockets.add(socket)
       if externalSockets.len > 0:
-        let final = $(%*{
-          "type": "final", "scores": results["scores"],
-          "reason": results["reason"], "endRule": results["endRule"],
-          "game": GameName, "seed": config.seed,
-          "replay_sha256": (if hasReplay: %sha256(replayBytes).toHex else: newJNull())
-        })
+        let final =
+          if policyFailed:
+            $(%*{
+              "type": "final", "scores": newJNull(),
+              "reason": "player_failure", "endRule": "policy_failure",
+              "game": GameName, "seed": config.seed,
+              "replay_sha256": (if hasReplay: %sha256(replayBytes).toHex else: newJNull())
+            })
+          else:
+            let results = parseJson(sim.playerResultsJson())
+            $(%*{
+              "type": "final", "scores": results["scores"],
+              "reason": results["reason"], "endRule": results["endRule"],
+              "game": GameName, "seed": config.seed,
+              "replay_sha256": (if hasReplay: %sha256(replayBytes).toHex else: newJNull())
+            })
         for socket in externalSockets:
-          socket.send(final, TextMessage)
+          try:
+            socket.send(final, TextMessage)
+          except CatchableError:
+            discard
         sleep(500)
     if capture.isSome:
-      capture.get().finishMatch(sim)
+      capture.get().finishMatch(sim, failed = policyFailed)
       capture.get().trajectory.writeEventsToUri(trajectoryUri)
     if hasReplay:
       echo "Replay written: ", saveReplayPath,
@@ -700,6 +713,9 @@ proc runServerLoop*(
       writeFile(eventsPath, collectedEvents.eventsJsonl(sim.tickCount))
       echo "Events written: ", eventsPath, " (", collectedEvents.len,
         " events)"
+    if policyFailed:
+      echo "Policy failure: episode ended without publishing scores"
+      return
     if runtimeConfig.resultsUri.len > 0:
       runtimeConfig.writeResults(sim.playerResultsJson() & "\n")
     elif saveScoresPath.len > 0:
@@ -820,25 +836,25 @@ proc runServerLoop*(
           sim.players[index].registered = true
         recordAndWrite(reg.record)
 
-      # A seat that never connects does NOT end the episode: the no-show is
-      # declared, its cog is driven by the `porter` baseline for the whole
-      # run, and the run plays to a normal ending.
+      # A seat that never connects ends the episode as a terminal policy failure
+      # with no substitute baseline move and no scores published.
       if not replayLoaded and sim.lobbyJoinTimedOut() and not failureDeclared:
         failureDeclared = true
+        policyFailed = true
         let stuck = sim.nextPlayerSlot()
         declarePlayerFailure(stuck,
           "player slot " & $stuck & " never joined the lobby within " &
             $config.lobbyJoinTimeoutTicks & " lobby ticks (~" &
             $(config.lobbyJoinTimeoutTicks div TargetFps) & "s)")
         echo "tandem: lobby join timeout on slot ", stuck,
-          "; starting with the porter baseline in that seat"
-        sim.startGame()
+          "; ending episode as policy failure"
+        quitAfterFrame = true
 
       var frameEvents = newJArray()
       if replayLoaded:
         frameEvents = replayPlayer.advanceReplayFrame(
           sim, broadcastTracker, replaySeekTicks, replayCommands)
-      else:
+      elif not quitAfterFrame:
         for command in replayCommands:
           liveSpeedIndex.applySpeedCommand(command)
         for _ in 0 ..< playbackSpeed(liveSpeedIndex):
@@ -879,12 +895,23 @@ proc runServerLoop*(
                     if playerIndices[i] >= 0 and
                         playerIndices[i] < sim.players.len and
                         sim.players[playerIndices[i]].seat == seat:
-                      sockets[i].send($(%*{
-                        "type": "decision_result", "turn": turnIndex,
-                        "accepted": engine.externalAccepted[seat],
-                        "selected_attempt_id": engine.decisions[seat].selectedAttemptId,
-                        "executed_action": engine.decisions[seat].executedAction
-                      }), TextMessage)
+                      try:
+                        sockets[i].send($(%*{
+                          "type": "decision_result", "turn": turnIndex,
+                          "accepted": engine.externalAccepted[seat],
+                          "selected_attempt_id": engine.decisions[seat].selectedAttemptId,
+                          "executed_action": engine.decisions[seat].executedAction
+                        }), TextMessage)
+                      except CatchableError:
+                        discard
+              if engine.failedSeat.isSome:
+                if not failureDeclared:
+                  failureDeclared = true
+                  declarePlayerFailure(ord(engine.failedSeat.get()), engine.failureMessage)
+                echo "tandem: policy failure: ", engine.failureMessage
+                policyFailed = true
+                quitAfterFrame = true
+                break
           # EDIT 1: the seats send no inputs; the control layer compiles both
           # force vectors from the recorded orders. The mask frame is still
           # written so ctf's plumbing is untouched, and never changes.

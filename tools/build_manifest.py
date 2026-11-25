@@ -72,10 +72,13 @@ twist from both seats is a pure couple. `brace` halves the push and raises the
 grip limit. `note` and `say` go to the spectator feed and are NEVER delivered to
 the partner: there is no communication channel of any kind.
 
-Parsing is tolerant (fences, prose prefixes, numeric strings, `drive` as an
-object, integer percentages), a failed attempt is retried once, and two failures
-fall back to the `porter` scripted order with a `fallback` record. Every
-recorded string is truncated on RUNE boundaries."""
+Parsing is strict on control fields (`drive`, `effort`, `yield`, `twist`, and
+`brace` must all be finite JSON numbers in range; `drive` must be non-zero). A
+failed attempt is retried once inside the turn budget; if a non-scripted seat
+still fails to provide a valid order (timeout, unavailable endpoint, or parse
+failure), no substitute move is played and the episode ends as a terminal
+policy failure without publishing scores. Every recorded string is truncated on
+RUNE boundaries."""
 
 GLOBAL_PROTOCOL = """GET /global (websocket) is the spectator snapshot: the same
 Sprite v1 binary stream as a seat's, with no self markers, plus the broadcast
@@ -272,6 +275,27 @@ manifest = {
     },
     "player": [
         {
+            "id": "model",
+            "type": "player",
+            "name": "Tandem Model Player",
+            "description": ("Ordinary LLM-backed carrier using the hosted model "
+                            "sidecar. Reads its private view and handle strain "
+                            "each turn and submits a six-field carry order over "
+                            "the authenticated player socket."),
+            "image": IMAGE,
+            "run": ["/bin/tandem-player"],
+            "env": {
+                "COWORLD_LLM_ENABLED": "true",
+                "COWORLD_LLM_MODEL": "anthropic/claude-haiku-4.5",
+                "PLAYER_POLICY_LABEL": "tandem-model",
+            },
+            "source_url": SOURCE,
+            "resources": {
+                "requests": {"cpu": "100m", "memory": "128Mi"},
+                "limits": {"cpu": "1"},
+            },
+        },
+        {
             "id": "baseline",
             "type": "player",
             "name": "Tandem Porter Baseline",
@@ -288,7 +312,7 @@ manifest = {
                 "requests": {"cpu": "100m", "memory": "64Mi"},
                 "limits": {"cpu": "1"},
             },
-        }
+        },
     ],
     "variants": [
         variant("default", "Delivery (2 cogs, 100 s)",
@@ -298,7 +322,7 @@ manifest = {
                 "rounds.", 1440, 420),
     ],
     "certification": {
-        "players": [{"player_id": "baseline"}, {"player_id": "baseline"}],
+        "players": [{"player_id": "model"}, {"player_id": "baseline"}],
         "game_config": {
             "players": SEATS,
             "slots": SLOTS,
@@ -308,7 +332,9 @@ manifest = {
             "maxTicks": 900,
             "maxGames": 1,
             "turnTicks": 48,
-            "turnBudgetMs": 7000,
+            "turnBudgetMs": 12000,
+            "attempt1Ms": 7000,
+            "retryMs": 4000,
             "minBatchSpacingMs": 0,
             "wallClockBudgetSeconds": 180,
             "lobbyJoinTimeoutTicks": 1440,

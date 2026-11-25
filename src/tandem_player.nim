@@ -1,5 +1,6 @@
 ## Tandem's bundled player entrypoint (/bin/tandem-player).
 ##
+##   COWORLD_LLM_ENABLED=true          -> delegates to /opt/tandem-ordinary/player.py
 ##   PLAYER_PROMPT=<text>              -> delegates to /opt/tandem-ordinary/player.py
 ##   PLAYER_SCRIPTED=porter|mule       -> native scripted seat
 ##   (neither)                         -> PLAYER_SCRIPTED=porter
@@ -84,7 +85,9 @@ proc ordinaryPlayerPath*(): string =
   if configured.len > 0: configured else: DefaultOrdinaryPlayerPath
 
 proc shouldDelegateToOrdinary*(): bool =
-  getEnv("PLAYER_PROMPT").len > 0 or
+  getEnv("COWORLD_LLM_ENABLED").strip().toLowerAscii() == "true" or
+    getEnv("COWORLD_LLM_ENDPOINT").strip().len > 0 or
+    getEnv("PLAYER_PROMPT").len > 0 or
     getEnv("TANDEM_CHECKPOINT_ENDPOINT").len > 0 or
     getEnv("TANDEM_ADAPTER_DIR").len > 0
 

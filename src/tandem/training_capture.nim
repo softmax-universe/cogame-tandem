@@ -27,7 +27,7 @@ proc flushTurn*(capture: MatchCapture, endTick: int, terminal = false) =
       "post_tick_hashes": capture.hashes}
     capture.trajectory.recordDecision($capture.startTick & "-" & $ord(seat), $ord(seat),
       observation, issued.attempts, issued.selectedAttemptId, issued.executedAction,
-      issued.status, terminal, if issued.status == asFallback: some("engine-porter") else: none(string))
+      issued.status, terminal, none(string))
   capture.pending = false
 
 proc beginTurn*(capture: MatchCapture, engine: TurnEngine, sim: SimServer,
@@ -49,8 +49,11 @@ proc beginTurn*(capture: MatchCapture, engine: TurnEngine, sim: SimServer,
 proc recordTick*(capture: MatchCapture, sim: SimServer) =
   if capture.pending: capture.hashes.add($sim.gameHash())
 
-proc finishMatch*(capture: MatchCapture, sim: SimServer) =
+proc finishMatch*(capture: MatchCapture, sim: SimServer, failed = false) =
   capture.flushTurn(sim.tickCount, true)
+  if failed:
+    capture.trajectory.finish(esFailed, newJNull(), newJNull())
+    return
   let results = parseJson(sim.playerResultsJson())
   results["engine_version"] = %GameVersion
   let reason = results["reason"].getStr()

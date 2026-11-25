@@ -1,13 +1,12 @@
-## Tolerant parsing and repair, and the rune-boundary truncation that keeps a
+## Strict order parsing and rune-boundary truncation that keeps a
 ## replay parseable by a strict UTF-8 reader.
 
 import std/[json, random, strutils, unicode]
 import lib/helpers
 
-proc parse(text: string, previous = emptyOrder(), hasPrevious = false):
-    tuple[order: Order, usable: bool] =
+proc parse(text: string): tuple[order: Order, usable: bool] =
   let payload = parseJson(text)
-  parseOrder(payload, previous, hasPrevious, emptyOrder(), 3)
+  parseOrder(payload, 3)
 
 proc completeAction() =
   let got = parse("""{"note":"easing in","drive":[0.6,-0.8],"effort":0.4,
@@ -24,67 +23,37 @@ proc completeAction() =
     "drive was not quantised to a unit vector: " & $magnitude
   report "a complete player action parses"
 
-proc percentagesAndStrings() =
-  let got = parse("""{"drive":{"x":"1","y":"0"},"effort":"45","yield":80,
-    "twist":"-25","brace":"0.5"}""")
-  doAssert got.usable
-  doAssert got.order.effort == 115, "45 % became " & $got.order.effort
-  doAssert got.order.yieldQ == 204, "80 % became " & $got.order.yieldQ
-  doAssert got.order.twist == -64, "-25 % became " & $got.order.twist
-  doAssert got.order.brace == 128
-  doAssert got.order.driveX == 4096 and got.order.driveY == 0
-  report "integer percentages, numeric strings and object drive all repair"
+proc legacyShimsAreRejected() =
+  ## Legacy representations (object drive, numeric strings, integer percentages)
+  ## are rejected rather than silently repaired.
+  for text in [
+      """{"drive":{"x":1,"y":0},"effort":0.5,"yield":0.2,"twist":0,"brace":0}""",
+      """{"drive":[1,0],"effort":"0.5","yield":0.2,"twist":0,"brace":0}""",
+      """{"drive":[1,0],"effort":45,"yield":0.2,"twist":0,"brace":0}""",
+      """{"drive":[1,0],"effort":0.5,"yield":80,"twist":0,"brace":0}""",
+      """{"drive":[1,0],"effort":0.5,"yield":0.2,"twist":"-25","brace":0}"""]:
+    let got = parse(text)
+    doAssert not got.usable, "legacy shim was accepted: " & text
+  report "legacy object drive, string numbers, and percentages are rejected"
 
-proc missingAndNonFinite() =
-  let got = parse("""{"note":"hm","drive":[0,0],"effort":null,"twist":"nope"}""")
-  doAssert got.usable, "a reply with a usable note must not trigger the retry"
-  doAssert got.order.effort == 128, "missing effort defaulted to " &
-    $got.order.effort
-  doAssert got.order.yieldQ == 64
-  doAssert got.order.twist == 0
-  doAssert got.order.brace == 0
-  var previous = emptyOrder()
-  previous.driveX = 0
-  previous.driveY = 4096
-  let kept = parse("""{"drive":[0,0],"effort":0.5}""", previous, true)
-  doAssert kept.order.driveX == 0 and kept.order.driveY == 4096,
-    "a zero drive did not fall back to last turn's"
-  # MISSING and NON-FINITE take the same branch as [0,0]: last turn's drive
-  # first, the scripted fallback's only when there is no last turn. The
-  # fallback here is `porter`'s real order, whose drive is never zero.
-  var fallback = emptyOrder()
-  fallback.driveX = 2896
-  fallback.driveY = -2896
-  for text in ["""{"effort":0.5}""", """{"drive":[null,1],"effort":0.5}""",
-      """{"drive":"north","effort":0.5}"""]:
-    let repaired = parseOrder(parseJson(text), previous, true,
-      fallback, 3)
-    doAssert repaired.order.driveX == 0 and repaired.order.driveY == 4096,
-      "`" & text & "` kept the scripted fallback's drive (" &
-        $repaired.order.driveX & "," & $repaired.order.driveY &
-        ") instead of last turn's"
-    let noPrevious = parseOrder(parseJson(text), previous, false,
-      fallback, 3)
-    doAssert noPrevious.order.driveX == fallback.driveX and
-      noPrevious.order.driveY == fallback.driveY,
-      "with no previous turn the scripted fallback's drive must stand"
-  report "missing and non-finite fields repair to their documented defaults"
-
-proc outOfRangeClamps() =
-  let got = parse("""{"drive":[9,-9],"effort":4.5,"yield":-3,"twist":88,
-    "brace":2}""")
-  # 4.5 exceeds 1, so the percentage repair divides it by 100.
-  doAssert got.order.effort == 11, "effort 4.5 became " & $got.order.effort
-  doAssert got.order.yieldQ >= 0 and got.order.yieldQ <= 255
-  doAssert got.order.twist >= -255 and got.order.twist <= 255
-  doAssert got.order.brace >= 0 and got.order.brace <= 255
-  doAssert speedOf(got.order.driveX, got.order.driveY) <= 4098
-  report "out-of-range values clamp into the schema"
-
-proc nothingUsable() =
-  let got = parse("""{"weather":"fine"}""")
-  doAssert not got.usable, "an empty object must trigger the retry"
-  report "a reply with no usable field is not usable"
+proc missingAndInvalidAreRejected() =
+  ## Missing, null, zero-drive, wrong-type, or out-of-range control fields are
+  ## rejected rather than fabricated from previous turns or defaults.
+  for text in [
+      """{"note":"hm","drive":[0,0],"effort":0.5,"yield":0.2,"twist":0,"brace":0}""",
+      """{"note":"hm","drive":[1,0],"effort":null,"yield":0.2,"twist":0,"brace":0}""",
+      """{"drive":[1,0],"effort":0.5}""",
+      """{"drive":[null,1],"effort":0.5,"yield":0.2,"twist":0,"brace":0}""",
+      """{"drive":"north","effort":0.5,"yield":0.2,"twist":0,"brace":0}""",
+      """{"drive":[9,-9],"effort":0.5,"yield":0.2,"twist":0,"brace":0}""",
+      """{"drive":[1,0],"effort":1.5,"yield":0.2,"twist":0,"brace":0}""",
+      """{"drive":[1,0],"effort":0.5,"yield":-0.1,"twist":0,"brace":0}""",
+      """{"drive":[1,0],"effort":0.5,"yield":0.2,"twist":1.5,"brace":0}""",
+      """{"drive":[1,0],"effort":0.5,"yield":0.2,"twist":0,"brace":2}""",
+      """{"weather":"fine"}"""]:
+    let got = parse(text)
+    doAssert not got.usable, "invalid order was accepted: " & text
+  report "missing, zero-drive, and out-of-range fields are rejected"
 
 proc runeTruncation() =
   ## The 48th and 49th characters of `say` are a 4-byte emoji: the truncation
@@ -93,7 +62,8 @@ proc runeTruncation() =
   let padding = repeat("a", 47)
   let say = padding & "\u{1F6CB}\u{1F6CB}\u{1F6CB}"
   let note = repeat("n", 158) & "\u{1F6CB}\u{1F6CB}\u{1F6CB}"
-  let body = $ %*{"note": note, "say": say, "drive": [1, 0], "effort": 0.5}
+  let body = $ %*{"note": note, "say": say, "drive": [1, 0], "effort": 0.5,
+                  "yield": 0.2, "twist": 0.0, "brace": 0.0}
   let got = parse(body)
   doAssert got.usable
   doAssert got.order.say.runeLen <= MaxSayRunes,
@@ -154,12 +124,10 @@ proc recordRoundTrips() =
 
 when isMainModule:
   completeAction()
-  percentagesAndStrings()
-  missingAndNonFinite()
-  outOfRangeClamps()
-  nothingUsable()
+  legacyShimsAreRejected()
+  missingAndInvalidAreRejected()
   runeTruncation()
   fallbackDetailsAreRuneSafe()
   oversizeRecordStaysJson()
   recordRoundTrips()
-  echo "test_orders: parsing is tolerant and truncation is rune-safe"
+  echo "test_orders: parsing is strict and truncation is rune-safe"

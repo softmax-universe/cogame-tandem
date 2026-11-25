@@ -7,11 +7,10 @@
 ## 1. **Every recorded string is truncated on RUNE boundaries, never bytes.**
 ##    A byte-truncated multi-byte character is exactly the bug that makes
 ##    replay bytes render in a browser but fail a strict parser.
-## 2. **Parsing is tolerant and never fails hard.** Markdown fences, prose
-##    prefixes, numeric strings, `drive` as an object, integer percentages,
-##    NaN, absent and out-of-range fields — all repair. Only when no object
-##    with at least one usable field can be recovered do the retry and then the
-##    scripted fallback fire.
+## 2. **Parsing is strict on control fields.** Every carry order must provide
+##    finite, in-range `drive`, `effort`, `yield`, `twist`, and `brace` values
+##    in the documented JSON schema; missing, malformed, or out-of-range fields
+##    are rejected rather than repaired or substituted.
 ##
 ## Floats are legal here: this module is OUTSIDE the float-free grep guard,
 ## because the quantised integers it produces — and only those — are what the
@@ -282,9 +281,9 @@ proc extractOrderObject*(text: string): JsonNode =
   if result.kind != JObject:
     raise newException(ValueError, "Tandem response must be a JSON object")
 
-proc numberOf(node: JsonNode, ok: var bool): float =
-  ## Accepts a JSON number OR a numeric string; anything else, or a non-finite
-  ## value, reports `ok = false`.
+proc strictNumber(node: JsonNode, ok: var bool): float =
+  ## Accepts a finite JSON number only. Strings, nulls, booleans, and non-finite
+  ## floats are rejected.
   ok = false
   if node.isNil:
     return 0.0
@@ -298,92 +297,76 @@ proc numberOf(node: JsonNode, ok: var bool): float =
       return 0.0
     ok = true
     return value
-  of JString:
-    var text = node.getStr().strip()
-    if text.endsWith("%"):
-      text = text[0 ..< text.high]
-    try:
-      let value = parseFloat(text.strip())
-      if value != value or value == Inf or value == NegInf:
-        return 0.0
-      ok = true
-      return value
-    except ValueError:
-      return 0.0
   else:
     return 0.0
 
-proc unitNumber(node: JsonNode, ok: var bool): float =
-  ## A 0..1 field. An integer percentage (`45`) is divided by 100 when the
-  ## value exceeds 1, which is the single most common model mistake.
-  result = numberOf(node, ok)
-  if ok and (result > 1.0 or result < -1.0):
-    result = result / 100.0
-
 proc parseOrder*(
   payload: JsonNode,
-  previous: Order,
-  hasPrevious: bool,
-  fallback: Order,
   turn: int
 ): tuple[order: Order, usable: bool] =
-  ## Repairs one reply into a legal, quantised order. `usable` is false when no
-  ## field at all could be recovered — the only case that triggers the retry.
-  var order = fallback
+  ## Strictly validates and quantises one carry order. Every control field
+  ## (`drive`, `effort`, `yield`, `twist`, `brace`) is required and must be a
+  ## finite JSON number within its legal range; `note` and `say` are optional
+  ## strings clipped on rune boundaries. Never repairs or substitutes missing
+  ## or invalid fields.
+  var order = emptyOrder()
   order.turn = int32(turn)
-  order.source = osLlm
-  order.note = clipRunes(payload{"note"}.getStr(), MaxNoteRunes)
-  order.say = clipRunes(payload{"say"}.getStr(), MaxSayRunes)
-  var usable = order.note.len > 0 or order.say.len > 0
+  order.source = osExternal
+  if payload.isNil or payload.kind != JObject:
+    return (order, false)
 
-  # drive: two finite numbers, or {"x": .., "y": ..}.
+  let noteNode = payload{"note"}
+  if not noteNode.isNil:
+    if noteNode.kind != JString:
+      return (order, false)
+    order.note = clipRunes(noteNode.getStr(), MaxNoteRunes)
+
+  let sayNode = payload{"say"}
+  if not sayNode.isNil:
+    if sayNode.kind != JString:
+      return (order, false)
+    order.say = clipRunes(sayNode.getStr(), MaxSayRunes)
+
+  # drive: required 2-element array of finite numbers, non-zero.
+  let drive = payload{"drive"}
+  if drive.isNil or drive.kind != JArray or drive.len != 2:
+    return (order, false)
   var
     okX = false
     okY = false
-    dx = 0.0
-    dy = 0.0
-  let drive = payload{"drive"}
-  if not drive.isNil and drive.kind == JArray and drive.len >= 2:
-    dx = numberOf(drive[0], okX)
-    dy = numberOf(drive[1], okY)
-  elif not drive.isNil and drive.kind == JObject:
-    dx = numberOf(drive{"x"}, okX)
-    dy = numberOf(drive{"y"}, okY)
-  if okX and okY:
-    let quantised = quantUnit(dx, dy)
-    if quantised.x != 0 or quantised.y != 0:
-      order.driveX = quantised.x
-      order.driveY = quantised.y
-      usable = true
-    elif hasPrevious:
-      order.driveX = previous.driveX
-      order.driveY = previous.driveY
-  elif hasPrevious:
-    # Missing or non-finite `drive`: LAST TURN'S drive, and only then the
-    # scripted fallback's (which `order` already carries, being a copy of it).
-    # Guarding this on a zero fallback inverted the note's precedence, because
-    # the porter fallback always emits a non-zero drive.
-    order.driveX = previous.driveX
-    order.driveY = previous.driveY
+  let
+    dx = strictNumber(drive[0], okX)
+    dy = strictNumber(drive[1], okY)
+  if not okX or not okY or dx < -1.0 or dx > 1.0 or dy < -1.0 or dy > 1.0:
+    return (order, false)
+  let quantised = quantUnit(dx, dy)
+  if quantised.x == 0 and quantised.y == 0:
+    return (order, false)
+  order.driveX = quantised.x
+  order.driveY = quantised.y
 
   var ok = false
-  let effort = unitNumber(payload{"effort"}, ok)
-  order.effort = if ok: quantUnsigned(effort) else: 128'i32
-  if ok: usable = true
+  let effort = strictNumber(payload{"effort"}, ok)
+  if not ok or effort < 0.0 or effort > 1.0:
+    return (order, false)
+  order.effort = quantUnsigned(effort)
 
   ok = false
-  let yielded = unitNumber(payload{"yield"}, ok)
-  order.yieldQ = if ok: quantUnsigned(yielded) else: 64'i32
-  if ok: usable = true
+  let yielded = strictNumber(payload{"yield"}, ok)
+  if not ok or yielded < 0.0 or yielded > 1.0:
+    return (order, false)
+  order.yieldQ = quantUnsigned(yielded)
 
   ok = false
-  let twist = unitNumber(payload{"twist"}, ok)
-  order.twist = if ok: quantSigned(twist) else: 0'i32
-  if ok: usable = true
+  let twist = strictNumber(payload{"twist"}, ok)
+  if not ok or twist < -1.0 or twist > 1.0:
+    return (order, false)
+  order.twist = quantSigned(twist)
 
   ok = false
-  let brace = unitNumber(payload{"brace"}, ok)
-  order.brace = if ok: quantUnsigned(brace) else: 0'i32
-  if ok: usable = true
+  let brace = strictNumber(payload{"brace"}, ok)
+  if not ok or brace < 0.0 or brace > 1.0:
+    return (order, false)
+  order.brace = quantUnsigned(brace)
 
-  (order, usable)
+  (order, true)
