@@ -17,7 +17,7 @@ type
     seed*: int
 
 const
-  PromptBankVersion* = "tandem-rules-v2"
+  PromptBankVersion* = "tandem-rules-v3"
   PromptBank = staticRead("../../players/ordinary/prompt_bank.json")
 
 proc promptSelection*(node: JsonNode): PromptSelection =

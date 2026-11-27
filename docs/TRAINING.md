@@ -1,11 +1,11 @@
 # Tandem training
 
 Build `Dockerfile.ordinary-player` and seat the resulting image as a normal
-Coworld player. The original `baseline` roster remains the certification
-fixture. An ordinary player uses the authenticated Sprite player socket. Each
+Coworld player. Certification seats a model beside the scripted baseline. An ordinary player uses the authenticated Sprite player socket. Each
 turn, it receives a private view and constructs its own prompt and action.
 The game parses its complete carry order and installs the quantized
-order through the replay record.
+order through the replay record. In text-action training and live play,
+`drive: [0,0]` applies no drive force. Players can still twist, yield, or brace.
 
 The default policy builds a view-based carry order. `TANDEM_ADAPTER_DIR` loads a trained adapter from
 the player image with its matching local base model, PyTorch, Transformers,

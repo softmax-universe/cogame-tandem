@@ -11,8 +11,8 @@ of two cogs gripped to opposite handles of the same rigid couch.
  "twist":-1..1,"brace":0..1,"say":"…"}
 ```
 
-* **`drive`** is a direction in metres-frame view coordinates (y up). Its
-  magnitude is ignored; only the direction matters.
+* **`drive`** is a direction in metres-frame view coordinates (y up). Use
+  `[0,0]` for no drive force. Otherwise only the direction matters.
 * **`effort`** scales your push along `drive`. 1.0 is your full 600 N.
 * **`yield`** is the compliance knob and the only reply to your partner you
   have. At `yield = 1` you push 80 % of the way the handle is already pulling

@@ -23,6 +23,18 @@ proc completeAction() =
     "drive was not quantised to a unit vector: " & $magnitude
   report "a complete player action parses"
 
+proc zeroDrive() =
+  var sim = carryingSim(testConfig())
+  for effort in [0.0, 0.5]:
+    for twist in [0.0, 1.0]:
+      let got = parseOrder(%*{"drive": [0, 0], "effort": effort,
+        "yield": 0, "brace": 0, "twist": twist}, 3)
+      doAssert got.usable
+      doAssert got.order.driveX == 0 and got.order.driveY == 0
+      sim.activeOrder[ord(Cobalt)] = got.order
+      doAssert (sim.seatForce(Cobalt).force == (0'i32, 0'i32)) == (twist == 0)
+  report "zero drive adds no push and leaves twist available"
+
 proc legacyShimsAreRejected() =
   ## Legacy representations (object drive, numeric strings, integer percentages)
   ## are rejected rather than silently repaired.
@@ -37,10 +49,9 @@ proc legacyShimsAreRejected() =
   report "legacy object drive, string numbers, and percentages are rejected"
 
 proc missingAndInvalidAreRejected() =
-  ## Missing, null, zero-drive, wrong-type, or out-of-range control fields are
+  ## Missing, null, wrong-type, or out-of-range control fields are
   ## rejected rather than fabricated from previous turns or defaults.
   for text in [
-      """{"note":"hm","drive":[0,0],"effort":0.5,"yield":0.2,"twist":0,"brace":0}""",
       """{"note":"hm","drive":[1,0],"effort":null,"yield":0.2,"twist":0,"brace":0}""",
       """{"drive":[1,0],"effort":0.5}""",
       """{"drive":[null,1],"effort":0.5,"yield":0.2,"twist":0,"brace":0}""",
@@ -53,7 +64,7 @@ proc missingAndInvalidAreRejected() =
       """{"weather":"fine"}"""]:
     let got = parse(text)
     doAssert not got.usable, "invalid order was accepted: " & text
-  report "missing, zero-drive, and out-of-range fields are rejected"
+  report "missing and out-of-range fields are rejected"
 
 proc runeTruncation() =
   ## The 48th and 49th characters of `say` are a 4-byte emoji: the truncation
@@ -141,6 +152,7 @@ proc extractRejectsProseAndMultipleFences() =
 
 when isMainModule:
   completeAction()
+  zeroDrive()
   legacyShimsAreRejected()
   missingAndInvalidAreRejected()
   extractRejectsProseAndMultipleFences()

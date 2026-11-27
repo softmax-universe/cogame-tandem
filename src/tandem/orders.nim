@@ -90,7 +90,7 @@ proc clipRunes*(text: string, maxRunes: int): string =
 
 proc quantUnit*(x, y: float): tuple[x, y: int32] =
   ## A finite pair clamped to [-1, 1] and quantised to a Q12 unit vector in
-  ## VIEW coordinates. A zero vector stays zero, which the caller repairs.
+  ## VIEW coordinates. A zero vector applies no drive force.
   let
     cx = clamp(x, -1.0, 1.0)
     cy = clamp(y, -1.0, 1.0)
@@ -312,7 +312,7 @@ proc parseOrder*(
       return (order, false)
     order.say = clipRunes(sayNode.getStr(), MaxSayRunes)
 
-  # drive: required 2-element array of finite numbers, non-zero.
+  # drive: required 2-element array of finite numbers.
   let drive = payload{"drive"}
   if drive.isNil or drive.kind != JArray or drive.len != 2:
     return (order, false)
@@ -325,8 +325,6 @@ proc parseOrder*(
   if not okX or not okY or dx < -1.0 or dx > 1.0 or dy < -1.0 or dy > 1.0:
     return (order, false)
   let quantised = quantUnit(dx, dy)
-  if quantised.x == 0 and quantised.y == 0:
-    return (order, false)
   order.driveX = quantised.x
   order.driveY = quantised.y
 
