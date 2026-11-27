@@ -65,7 +65,7 @@ before waiting for either response. An action is one JSON object:
    "twist":-1..1,"brace":0..1,"say":"<=48 chars"}
 
 `drive` is a direction in view coordinates (metres, world centre origin, y up);
-its magnitude is ignored. `effort` scales the push along it (1 = 600 N).
+use `[0,0]` for no drive force. Otherwise only the direction matters. `effort` scales the push along it (1 = 600 N).
 `yield` is the compliance knob: at 1 the seat pushes 80 % of the way the force
 it FEELS is already pulling it. `twist` rotates the couch (+1 = ccw); a positive
 twist from both seats is a pure couple. `brace` halves the push and raises the
@@ -73,7 +73,7 @@ grip limit. `note` and `say` go to the spectator feed and are NEVER delivered to
 the partner: there is no communication channel of any kind.
 
 Parsing is strict on control fields (`drive`, `effort`, `yield`, `twist`, and
-`brace` must all be finite JSON numbers in range; `drive` must be non-zero). A
+`brace` must all be finite JSON numbers in range). A
 failed attempt is retried once inside the turn budget; if a non-scripted seat
 still fails to provide a valid order (timeout, unavailable endpoint, or parse
 failure), no substitute move is played and the episode ends as a terminal

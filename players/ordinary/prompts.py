@@ -18,7 +18,7 @@ class PromptVariant(StrEnum):
     MIXED = "mixed"
 
 
-BANK_VERSION = "tandem-rules-v2"
+BANK_VERSION = "tandem-rules-v3"
 BANK = json.loads(Path(__file__).with_name("prompt_bank.json").read_text())
 TRAINING_VARIANTS = tuple(PromptVariant)[:5]
 INTRODUCTIONS = json.loads(Path(__file__).with_name("prompt_introductions.json").read_text())

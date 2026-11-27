@@ -102,7 +102,7 @@ Everything in it is either your own state, the shared body's state, or the map.
 | Field | Cap / legal values | Validation |
 |---|---|---|
 | `note` | optional string, ≤ 160 runes | truncated on a rune boundary |
-| `drive` | required 2-element finite number array, each in `[−1, 1]`, non-zero, quantised to a Q12 unit vector | rejected if missing, non-finite, out of range, or `[0,0]` |
+| `drive` | required 2-element finite number array, each in `[−1, 1]`, quantised to a Q12 direction; `[0,0]` applies no drive force | rejected if missing, non-finite, or out of range |
 | `effort` | required finite number in `[0, 1]`, quantised to `0..255` | rejected if missing, non-finite, or out of range |
 | `yield` | required finite number in `[0, 1]`, quantised to `0..255` | rejected if missing, non-finite, or out of range |
 | `twist` | required finite number in `[−1, 1]`, quantised to `−255..255` | rejected if missing, non-finite, or out of range |
